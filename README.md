@@ -1,16 +1,10 @@
 # kurasagi
 
-`kurasagi` is full POC of PatchGuard bypass for Windows 24H2.
+`kurasagi` is full POC of PatchGuard bypass for Windows 24H2. Tested on 26100.4351 - Up to 26100.6584.
 
 For more information, please refer to the `product` branch, which contains the PDF paper detailing the bypass.
 
 **If any BSOD which is related to `CRITICAL_STRUCTURE_CORRUPTION` (PatchGuard) appears, please create issue with it!**
-
-## Changelog
-
-(2025/08/03) **Caution**: Upgraded to 26100.4652. for 26100.4351 version bypass, refer to commit `80650b9cb71855042659137ecd8936f8a9336a61`. <br>
-(2025/08/18) **Caution**: Updated to 26100.4946. <br>
-(2025/08/23) Updated to most Windows 11 24H2 versions. Tested on 26100.4946.
 
 ## Disclaimers
 
