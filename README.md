@@ -1,6 +1,6 @@
 # kurasagi
 
-`kurasagi` is full POC of PatchGuard bypass for Windows 24H2. Tested on 26100.4351 - Up to 26100.6584.
+`kurasagi` is full POC of PatchGuard bypass for Windows 24H2. Tested on 26100.4351 - Up to 26100.6899.
 
 For more information, please refer to the `product` branch, which contains the PDF paper detailing the bypass.
 
