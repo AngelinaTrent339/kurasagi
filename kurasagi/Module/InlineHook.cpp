@@ -153,7 +153,7 @@ NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 	PEPROCESS process = PsGetCurrentProcess();
 	HANDLE pid = PsGetCurrentProcessId();
 	HANDLE tid = PsGetCurrentThreadId();
-	const char* processName = PsGetProcessImageFileName(process);
+	const char* processName = (const char*)PsGetProcessImageFileName(process);
 	
 	// Capture call stack (user-mode callers)
 	PVOID callStack[8] = {0};
