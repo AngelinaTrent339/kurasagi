@@ -97,6 +97,30 @@ BOOLEAN wsbp::InlineHook::RemoveHook(Hook* HookInfo) {
 	return TRUE;
 }
 
+// Helper to decode access mask
+static const char* DecodeAccessMask(ACCESS_MASK access) {
+	static char buffer[256];
+	buffer[0] = 0;
+	if (access & GENERIC_READ) strcat_s(buffer, sizeof(buffer), "READ|");
+	if (access & GENERIC_WRITE) strcat_s(buffer, sizeof(buffer), "WRITE|");
+	if (access & GENERIC_EXECUTE) strcat_s(buffer, sizeof(buffer), "EXEC|");
+	if (access & DELETE) strcat_s(buffer, sizeof(buffer), "DEL|");
+	if (buffer[0]) buffer[strlen(buffer)-1] = 0;
+	return buffer[0] ? buffer : "NONE";
+}
+
+static const char* DecodeDisposition(ULONG disp) {
+	switch(disp) {
+		case FILE_SUPERSEDE: return "SUPERSEDE";
+		case FILE_OPEN: return "OPEN";
+		case FILE_CREATE: return "CREATE";
+		case FILE_OPEN_IF: return "OPEN_IF";
+		case FILE_OVERWRITE: return "OVERWRITE";
+		case FILE_OVERWRITE_IF: return "OVERWRITE_IF";
+		default: return "UNKNOWN";
+	}
+}
+
 NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 	PHANDLE FileHandle,
 	ACCESS_MASK DesiredAccess,
@@ -111,70 +135,106 @@ NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 	ULONG EaLength
 ) {
 
-	// Filter out noise - only log interesting files
-	BOOLEAN shouldLog = FALSE;
+	// ========== CAPTURE CONTEXT BEFORE CALL ==========
+	LARGE_INTEGER timestamp;
+	KeQuerySystemTime(&timestamp);
+	PVOID returnAddress = _ReturnAddress();
+	PEPROCESS process = PsGetCurrentProcess();
+	HANDLE pid = PsGetCurrentProcessId();
+	HANDLE tid = PsGetCurrentThreadId();
+	const char* processName = PsGetProcessImageFileName(process);
 	
+	// Capture call stack (user-mode callers)
+	PVOID callStack[8] = {0};
+	ULONG framesCapture = RtlWalkFrameChain(callStack, 8, 0);
+	
+	// ========== CALL ORIGINAL ==========
+	if (!g_TrampolineBuffer) {
+		return STATUS_UNSUCCESSFUL;
+	}
+	
+	NtCreateFile_t trampolineFunc = (NtCreateFile_t)g_TrampolineBuffer;
+	NTSTATUS status = trampolineFunc(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock,
+		AllocationSize, FileAttributes, ShareAccess, CreateDisposition, CreateOptions, EaBuffer, EaLength);
+	
+	// ========== FILTER & LOG ==========
+	BOOLEAN shouldLog = FALSE;
 	if (ObjectAttributes && ObjectAttributes->ObjectName && ObjectAttributes->ObjectName->Buffer) {
-		UNICODE_STRING fileName = *ObjectAttributes->ObjectName;
-		
-		// Log if it's NOT a system/device file
-		if (fileName.Length > 0) {
-			// Skip \Device\, \??\Volume, MountPointManager, etc.
-			if (wcsstr(fileName.Buffer, L"\\Device\\") == NULL &&
-			    wcsstr(fileName.Buffer, L"MountPointManager") == NULL &&
-			    wcsstr(fileName.Buffer, L"STORAGE#") == NULL &&
-			    wcsstr(fileName.Buffer, L"\\SystemRoot\\") == NULL) {
-				
-				// Log files with extensions (.txt, .exe, .dll, etc.)
-				if (wcsstr(fileName.Buffer, L".txt") ||
-				    wcsstr(fileName.Buffer, L".doc") ||
-				    wcsstr(fileName.Buffer, L".exe") ||
-				    wcsstr(fileName.Buffer, L".dll") ||
-				    wcsstr(fileName.Buffer, L".log") ||
-				    wcsstr(fileName.Buffer, L".bat") ||
-				    wcsstr(fileName.Buffer, L".ps1") ||
-				    wcsstr(fileName.Buffer, L".ini") ||
-				    wcsstr(fileName.Buffer, L".cfg")) {
-					shouldLog = TRUE;
-				}
+		WCHAR* buf = ObjectAttributes->ObjectName->Buffer;
+		// Skip boring system stuff
+		if (wcsstr(buf, L"\\Device\\") == NULL && wcsstr(buf, L"MountPointManager") == NULL &&
+		    wcsstr(buf, L"STORAGE#") == NULL && wcsstr(buf, L"ConDrv") == NULL) {
+			// Log interesting extensions
+			if (wcsstr(buf, L".txt") || wcsstr(buf, L".doc") || wcsstr(buf, L".exe") ||
+			    wcsstr(buf, L".dll") || wcsstr(buf, L".log") || wcsstr(buf, L".ini") ||
+			    wcsstr(buf, L".cfg") || wcsstr(buf, L".bat") || wcsstr(buf, L".ps1") ||
+			    wcsstr(buf, L".json") || wcsstr(buf, L".xml") || wcsstr(buf, L".db")) {
+				shouldLog = TRUE;
 			}
 		}
 	}
 	
 	if (shouldLog) {
-		// Get current process name
-		PEPROCESS currentProcess = PsGetCurrentProcess();
-		PUCHAR processName = (PUCHAR)PsGetProcessImageFileName(currentProcess);
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"\n[Kurasagi] ═══════════════════════════════════════════════════\n");
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"[Kurasagi] 🔥 NtCreateFile - FULL INTEL\n");
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"[Kurasagi] ═══════════════════════════════════════════════════\n");
+		
+		// Timestamp
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"[Kurasagi] ⏱️  Time: %lld (100ns units since 1601)\n", timestamp.QuadPart);
+		
+		// Process Context
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"[Kurasagi] 📦 Process: %s | PID: %llu | TID: %llu\n", processName, (ULONG_PTR)pid, (ULONG_PTR)tid);
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"[Kurasagi] 📍 EPROCESS: %p\n", process);
+		
+		// Caller Info
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"[Kurasagi] � Return Address: %p (caller instruction)\n", returnAddress);
+		
+		// File Path
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"[Kurasagi] 📄 File: %wZ\n", ObjectAttributes->ObjectName);
+		
+		// All Arguments Decoded
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"[Kurasagi] 🔐 DesiredAccess: 0x%08X (%s)\n", DesiredAccess, DecodeAccessMask(DesiredAccess));
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"[Kurasagi] 🗂️  Disposition: %s (0x%X)\n", DecodeDisposition(CreateDisposition), CreateDisposition);
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"[Kurasagi] 🔧 CreateOptions: 0x%08X\n", CreateOptions);
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"[Kurasagi] 🤝 ShareAccess: 0x%X\n", ShareAccess);
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"[Kurasagi] 📋 FileAttributes: 0x%X\n", FileAttributes);
+		
+		// Return Status
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"[Kurasagi] ↩️  NTSTATUS: 0x%08X (%s)\n", status, NT_SUCCESS(status) ? "✅ SUCCESS" : "❌ FAILED");
+		
+		// Handle if successful
+		if (NT_SUCCESS(status) && FileHandle) {
+			__try {
+				DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+					"[Kurasagi] 🎯 FileHandle: 0x%p\n", *FileHandle);
+			} __except(EXCEPTION_EXECUTE_HANDLER) {}
+		}
+		
+		// Call Stack (shows execution path)
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"[Kurasagi] 📚 Call Stack (%lu frames):\n", framesCapture);
+		for (ULONG i = 0; i < framesCapture; i++) {
+			DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+				"[Kurasagi]   [%lu] %p\n", i, callStack[i]);
+		}
 		
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] 🔥 File: %wZ (Process: %s, PID: %llu)\n", 
-			ObjectAttributes->ObjectName,
-			processName,
-			(ULONG_PTR)PsGetCurrentProcessId());
+			"[Kurasagi] ═══════════════════════════════════════════════════\n\n");
 	}
-	
-	// Call original via trampoline (original bytes + jmp back)
-	if (!g_TrampolineBuffer) {
-		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] ERROR: Trampoline not initialized!\n");
-		return STATUS_UNSUCCESSFUL;
-	}
-	
-	NtCreateFile_t trampolineFunc = (NtCreateFile_t)g_TrampolineBuffer;
-	
-	NTSTATUS status = trampolineFunc(
-		FileHandle,
-		DesiredAccess,
-		ObjectAttributes,
-		IoStatusBlock,
-		AllocationSize,
-		FileAttributes,
-		ShareAccess,
-		CreateDisposition,
-		CreateOptions,
-		EaBuffer,
-		EaLength
-	);
 	
 	return status;
 }
