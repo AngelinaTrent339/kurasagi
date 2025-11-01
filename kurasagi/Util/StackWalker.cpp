@@ -6,6 +6,42 @@
 #include "StackWalker.hpp"
 #include "../Log.hpp"
 
+// KTRAP_FRAME structure (0x190 bytes)
+typedef struct _KTRAP_FRAME {
+	ULONGLONG P1Home;                    // 0x0
+	ULONGLONG P2Home;                    // 0x8
+	ULONGLONG P3Home;                    // 0x10
+	ULONGLONG P4Home;                    // 0x18
+	ULONGLONG P5;                        // 0x20
+	UCHAR PreviousMode;                  // 0x28
+	UCHAR PreviousIrql;                  // 0x29
+	UCHAR FaultIndicator;                // 0x2a
+	UCHAR ExceptionActive;               // 0x2b
+	ULONG MxCsr;                         // 0x2c
+	ULONGLONG Rax;                       // 0x30
+	ULONGLONG Rcx;                       // 0x38
+	ULONGLONG Rdx;                       // 0x40
+	ULONGLONG R8;                        // 0x48
+	ULONGLONG R9;                        // 0x50
+	ULONGLONG R10;                       // 0x58
+	ULONGLONG R11;                       // 0x60
+	ULONGLONG GsBase;                    // 0x68
+	UCHAR Padding1[0x68];                // 0x70-0xd7 (XMM registers, etc)
+	ULONGLONG FaultAddress;              // 0xd8
+	UCHAR Padding2[0x88];                // 0xe0-0x167
+	ULONGLONG Rip;                       // 0x168
+	USHORT SegCs;                        // 0x170
+	UCHAR Fill0;                         // 0x172
+	UCHAR Logging;                       // 0x173
+	USHORT Fill1[2];                     // 0x174
+	ULONG EFlags;                        // 0x178
+	ULONG Fill2;                         // 0x17c
+	ULONGLONG Rsp;                       // 0x180
+	USHORT SegSs;                        // 0x188
+	USHORT Fill3;                        // 0x18a
+	ULONG Fill4;                         // 0x18c
+} KTRAP_FRAME, *PKTRAP_FRAME;
+
 // KAPC_STATE structure
 typedef struct _KAPC_STATE {
 	LIST_ENTRY ApcListHead[2];
@@ -164,99 +200,106 @@ ULONG wsbp::StackWalker::CaptureStack(StackFrame* Frames, ULONG MaxFrames, PEPRO
 	
 	ULONG captured = 0;
 	
-	// Get current thread's trap frame to access user-mode context
+	// Get current thread to access trap frame
 	PKTHREAD currentThread = KeGetCurrentThread();
 	if (!currentThread) return 0;
 	
-	// Attach to process to read user-mode memory
-	KAPC_STATE apcState;
-	RtlZeroMemory(&apcState, sizeof(apcState));
-	KeStackAttachProcess((PKPROCESS)Process, &apcState);
+	// Capture kernel frames first
+	PVOID kernelStack[16] = {0};
+	ULONG kernelFrames = RtlWalkFrameChain(kernelStack, 16, 0);
 	
-	__try {
-		// Get user-mode RSP and RBP from thread context
-		// TrapFrame offset varies, try to get from KTHREAD + 0x90 (common offset)
-		PVOID* trapFrame = (PVOID*)((ULONG_PTR)currentThread + 0x90);
+	// Add kernel frames
+	for (ULONG i = 0; i < kernelFrames && captured < MaxFrames; i++) {
+		if (kernelStack[i] == NULL) break;
 		
-		// Manual stack walk - read return addresses from user stack
-		// This is simplified but works for most cases
+		Frames[captured].Address = kernelStack[i];
+		Frames[captured].IsKernelMode = TRUE;
+		Frames[captured].IsUserMode = FALSE;
 		
-		// Try to read user-mode stack frames manually
-		// Get context from current syscall transition
-		CONTEXT ctx = {0};
-		ctx.ContextFlags = CONTEXT_CONTROL;
+		// Resolve kernel module
+		GetModuleForAddress(Process, kernelStack[i], Frames[captured].ModuleName, 
+			sizeof(Frames[captured].ModuleName), &Frames[captured].ModuleBase);
 		
-		// For now, capture what we can from kernel side
-		// and add first user-mode return address from _ReturnAddress()
-		
-		// First frame: the syscall caller (user-mode)
-		PVOID userRetAddr = _ReturnAddress();
-		
-		// Walk backwards from kernel to find user transition
-		PVOID kernelStack[16] = {0};
-		ULONG kernelFrames = RtlWalkFrameChain(kernelStack, 16, 0);
-		
-		// Add kernel frames
-		for (ULONG i = 0; i < kernelFrames && captured < MaxFrames; i++) {
-			if (kernelStack[i] == NULL) break;
-			
-			Frames[captured].Address = kernelStack[i];
-			Frames[captured].IsKernelMode = TRUE;
-			Frames[captured].IsUserMode = FALSE;
-			
-			// Resolve kernel module
-			GetModuleForAddress(Process, kernelStack[i], Frames[captured].ModuleName, 
-				sizeof(Frames[captured].ModuleName), &Frames[captured].ModuleBase);
-			
-			if (Frames[captured].ModuleBase) {
-				Frames[captured].Offset = (ULONG_PTR)kernelStack[i] - (ULONG_PTR)Frames[captured].ModuleBase;
-			}
-			
-			captured++;
+		if (Frames[captured].ModuleBase) {
+			Frames[captured].Offset = (ULONG_PTR)kernelStack[i] - (ULONG_PTR)Frames[captured].ModuleBase;
 		}
 		
-		// Try to capture user-mode frames by walking user stack
-		// Get TEB and stack bounds
-		PTEB teb = (PTEB)PsGetThreadTeb(currentThread);
-		if (teb && MmIsAddressValid(teb)) {
-			// Get stack base and limit from TEB
-			PVOID stackBase = (PVOID)teb->NtTib.StackBase;
-			PVOID stackLimit = (PVOID)teb->NtTib.StackLimit;
+		captured++;
+	}
+	
+	// Now try to capture user-mode frames via trap frame
+	__try {
+		// Get TrapFrame from KTHREAD+0x90
+		PKTRAP_FRAME trapFrame = *(PKTRAP_FRAME*)((ULONG_PTR)currentThread + 0x90);
+		
+		if (trapFrame && MmIsAddressValid(trapFrame)) {
+			// Get user-mode RSP and RIP from trap frame
+			ULONGLONG userRsp = trapFrame->Rsp;
+			ULONGLONG userRip = trapFrame->Rip;
 			
-			if (stackBase && stackLimit && MmIsAddressValid(stackBase)) {
-				// Walk user stack looking for valid code pointers
-				PVOID* stackPtr = (PVOID*)stackBase;
+			// Add the first user-mode frame (the syscall caller)
+			if (userRip > 0x10000 && userRip < 0x00007FFFFFFFFFFF && captured < MaxFrames) {
+				Frames[captured].Address = (PVOID)userRip;
+				Frames[captured].IsKernelMode = FALSE;
+				Frames[captured].IsUserMode = TRUE;
 				
-				for (int i = 0; i < 256 && captured < MaxFrames; i++) {
-					PVOID addr = stackPtr[-i];
+				GetModuleForAddress(Process, (PVOID)userRip, Frames[captured].ModuleName, 
+					sizeof(Frames[captured].ModuleName), &Frames[captured].ModuleBase);
+				
+				if (Frames[captured].ModuleBase) {
+					Frames[captured].Offset = userRip - (ULONG_PTR)Frames[captured].ModuleBase;
+				}
+				
+				captured++;
+			}
+			
+			// Attach to process to walk user-mode stack
+			KAPC_STATE apcState;
+			RtlZeroMemory(&apcState, sizeof(apcState));
+			KeStackAttachProcess((PKPROCESS)Process, &apcState);
+			
+			__try {
+				// Validate user RSP is accessible
+				if (userRsp > 0x10000 && userRsp < 0x00007FFFFFFFFFFF) {
+					PVOID* stackPtr = (PVOID*)userRsp;
 					
-					// Check if this looks like a user-mode code address
-					if ((ULONG_PTR)addr < 0x00007FFFFFFFFFFF && (ULONG_PTR)addr > 0x10000) {
-						// Validate it's in a module
-						WCHAR modName[64] = {0};
-						PVOID modBase = NULL;
+					// Walk user stack looking for return addresses
+					for (int i = 0; i < 64 && captured < MaxFrames; i++) {
+						if (!MmIsAddressValid(&stackPtr[i])) break;
 						
-						if (GetModuleForAddress(Process, addr, modName, sizeof(modName), &modBase)) {
-							if (modName[0] != 0) {
-								Frames[captured].Address = addr;
-								Frames[captured].IsKernelMode = FALSE;
-								Frames[captured].IsUserMode = TRUE;
-								wcsncpy_s(Frames[captured].ModuleName, 64, modName, _TRUNCATE);
-								Frames[captured].ModuleBase = modBase;
-								Frames[captured].Offset = (ULONG_PTR)addr - (ULONG_PTR)modBase;
-								captured++;
+						PVOID addr = stackPtr[i];
+						
+						// Check if this looks like a user-mode code address
+						if ((ULONG_PTR)addr < 0x00007FFFFFFFFFFF && (ULONG_PTR)addr > 0x10000) {
+							// Validate it's in a module
+							WCHAR modName[64] = {0};
+							PVOID modBase = NULL;
+							
+							if (GetModuleForAddress(Process, addr, modName, sizeof(modName), &modBase)) {
+								if (modName[0] != 0) {
+									Frames[captured].Address = addr;
+									Frames[captured].IsKernelMode = FALSE;
+									Frames[captured].IsUserMode = TRUE;
+									wcsncpy_s(Frames[captured].ModuleName, 64, modName, _TRUNCATE);
+									Frames[captured].ModuleBase = modBase;
+									Frames[captured].Offset = (ULONG_PTR)addr - (ULONG_PTR)modBase;
+									captured++;
+								}
 							}
 						}
 					}
 				}
+				
+			} __except(EXCEPTION_EXECUTE_HANDLER) {
+				// Continue with what we have
 			}
+			
+			KeUnstackDetachProcess(&apcState);
 		}
 		
 	} __except(EXCEPTION_EXECUTE_HANDLER) {
-		// Continue with what we have
+		// Continue with kernel frames only
 	}
-	
-	KeUnstackDetachProcess(&apcState);
 	
 	return captured;
 }
