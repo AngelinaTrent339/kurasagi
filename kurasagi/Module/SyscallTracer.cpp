@@ -29,8 +29,8 @@ static wsbp::InlineHook::Hook g_QuerySysHook = {0};
 
 // Helper: Get caller info
 static void GetCallerInfo(PEPROCESS Process, PVOID* OutCaller, WCHAR* OutModule, SIZE_T ModuleSize, ULONG_PTR* OutOffset) {
-	StackWalker::StackFrame frames[16] = {0};
-	ULONG count = StackWalker::CaptureStack(frames, 16, Process);
+	wsbp::StackWalker::StackFrame frames[16] = {0};
+	ULONG count = wsbp::StackWalker::CaptureStack(frames, 16, Process);
 	
 	for (ULONG i = 0; i < count; i++) {
 		if (frames[i].IsUserMode && frames[i].Address) {
