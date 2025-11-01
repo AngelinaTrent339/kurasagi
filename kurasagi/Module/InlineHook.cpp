@@ -175,12 +175,10 @@ NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 	HANDLE pid = PsGetCurrentProcessId();
 	HANDLE tid = PsGetCurrentThreadId();
 	
-	// Get process name - use SeLocateProcessImageName or hardcoded offset
+	// Get process name - EPROCESS.ImageFileName offset is 0x338 for Windows 26100.6584
 	char processNameBuf[16] = {0};
 	__try {
-		// EPROCESS.ImageFileName offset varies by Windows version
-		// Try multiple known offsets: 0x450 (Win10), 0x5a8 (Win11 old), 0x5a0 (Win11 new)
-		const char* namePtr = (const char*)((ULONG_PTR)process + 0x5a0);
+		const char* namePtr = (const char*)((ULONG_PTR)process + 0x338);
 		RtlCopyMemory(processNameBuf, namePtr, 15);
 	} __except(EXCEPTION_EXECUTE_HANDLER) {
 		strcpy_s(processNameBuf, sizeof(processNameBuf), "Unknown");
