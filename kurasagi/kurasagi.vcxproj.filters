@@ -48,6 +48,9 @@
     <ClCompile Include="Module\Misc.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Module\Ssdt.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="Util\Arith.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -78,6 +81,21 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Module\Misc.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Module\Ssdt.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Module\SsdtReference.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Module\SsdtHelpers.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Module\SsdtExamples.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Module\SsdtRealWorld.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Util\Arith.hpp">

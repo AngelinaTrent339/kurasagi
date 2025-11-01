@@ -130,6 +130,7 @@
     <ClCompile Include="Module\Context7.cpp" />
     <ClCompile Include="Module\Misc.cpp" />
     <ClCompile Include="Module\Timer.cpp" />
+    <ClCompile Include="Module\Ssdt.cpp" />
     <ClCompile Include="Util\Arith.cpp" />
     <ClCompile Include="Util\Memory.cpp" />
   </ItemGroup>
@@ -142,6 +143,11 @@
     <ClInclude Include="Module\Context7.hpp" />
     <ClInclude Include="Module\Misc.hpp" />
     <ClInclude Include="Module\Timer.hpp" />
+    <ClInclude Include="Module\Ssdt.hpp" />
+    <ClInclude Include="Module\SsdtReference.hpp" />
+    <ClInclude Include="Module\SsdtHelpers.hpp" />
+    <ClInclude Include="Module\SsdtExamples.hpp" />
+    <ClInclude Include="Module\SsdtRealWorld.hpp" />
     <ClInclude Include="Util\Arith.hpp" />
     <ClInclude Include="Util\Memory.hpp" />
   </ItemGroup>
