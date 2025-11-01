@@ -49,8 +49,8 @@ BOOLEAN wsbp::Ssdt::InitializeSsdt() {
 	// Verify SSDT integrity by checking a few entries
 	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi] 🔍 SSDT Integrity Check:\n");
 	
-	PVOID ntoskrnlBase = (PVOID)wsbp::RtVar::KernelBase;
-	SIZE_T ntoskrnlSize = wsbp::RtVar::KernelSize;
+	PVOID ntoskrnlBase = (PVOID)gl::RtVar::KernelBase;
+	SIZE_T ntoskrnlSize = gl::RtVar::KernelSize;
 	
 	// Check NtCreateFile (index 0x55)
 	ULONG entry55 = g_KeServiceDescriptorTable->ServiceTableBase[0x55];
@@ -138,8 +138,8 @@ BOOLEAN wsbp::Ssdt::HookSsdtEntry(ULONG ServiceIndex, PVOID HookFunction, PVOID*
 	LogInfo("HookSsdtEntry: Original function at index %lu: %p", ServiceIndex, originalFunction);
 	
 	// Check if the original function is in ntoskrnl.exe range
-	PVOID ntoskrnlBase = (PVOID)wsbp::RtVar::KernelBase;
-	SIZE_T ntoskrnlSize = wsbp::RtVar::KernelSize;
+	PVOID ntoskrnlBase = (PVOID)gl::RtVar::KernelBase;
+	SIZE_T ntoskrnlSize = gl::RtVar::KernelSize;
 	
 	BOOLEAN isInNtoskrnl = ((ULONG_PTR)originalFunction >= (ULONG_PTR)ntoskrnlBase) &&
 	                       ((ULONG_PTR)originalFunction < ((ULONG_PTR)ntoskrnlBase + ntoskrnlSize));
