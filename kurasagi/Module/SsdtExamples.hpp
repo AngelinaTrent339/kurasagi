@@ -8,6 +8,7 @@
 #include "../Include.hpp"
 #include "Ssdt.hpp"
 #include "SsdtReference.hpp"
+#include "SsdtHelpers.hpp"
 
 namespace Examples {
 
@@ -33,7 +34,12 @@ namespace Examples {
 		ULONG EaLength
 	) {
 		if (ObjectAttributes && ObjectAttributes->ObjectName) {
-			DbgPrintEx(0, 0, "[FileMonitor] CREATE: %wZ\n", ObjectAttributes->ObjectName);
+			// Use helper for enhanced logging
+			SsdtHelpers::LogSyscall("NtCreateFile",
+				"File: %wZ | Access: %s | Disposition: %s",
+				ObjectAttributes->ObjectName,
+				SsdtHelpers::AccessMaskToString(DesiredAccess),
+				SsdtHelpers::DispositionToString(CreateDisposition));
 		}
 
 		NtCreateFile_t original = (NtCreateFile_t)OrigNtCreateFileEx1;
