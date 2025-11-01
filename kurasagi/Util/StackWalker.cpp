@@ -243,9 +243,10 @@ ULONG wsbp::StackWalker::CaptureStack(StackFrame* Frames, ULONG MaxFrames, PEPRO
 
 	if (userFrames == 0) {
 		// Fallback: manual walk using TEB stack boundaries
+		// KTHREAD.Teb is at offset 0xF0
 		PKURASAGI_TEB teb = NULL;
 		__try {
-			teb = (PKURASAGI_TEB)PsGetThreadTeb(currentThread);
+			teb = *(PKURASAGI_TEB*)((ULONG_PTR)currentThread + 0xF0);
 		} __except(EXCEPTION_EXECUTE_HANDLER) {
 			teb = NULL;
 		}
