@@ -21,32 +21,48 @@ BOOLEAN WriteOnReadOnlyMemory(PVOID src, PVOID dst, size_t size) {
 
 	PVOID mapped = NULL;
 	BOOLEAN success = FALSE;
+	BOOLEAN pagesLocked = FALSE;
 
 	__try {
+		// Lock pages - can throw exception if address is invalid
 		MmProbeAndLockPages(mdl, KernelMode, IoReadAccess);
+		pagesLocked = TRUE;
+		
+		// Map pages - can fail and return NULL
 		mapped = MmMapLockedPagesSpecifyCache(mdl, KernelMode, MmNonCached, NULL, FALSE, NormalPagePriority);
-
 		if (mapped == NULL) {
 			LogError("WriteOnReadOnlyMemory: MmMapLockedPagesSpecifyCache failed");
 			__leave;
 		}
 
-		MmProtectMdlSystemAddress(mdl, PAGE_READWRITE);
+		// Change protection - should not throw, but wraps in __try for safety
+		NTSTATUS status = MmProtectMdlSystemAddress(mdl, PAGE_READWRITE);
+		if (!NT_SUCCESS(status)) {
+			LogError("WriteOnReadOnlyMemory: MmProtectMdlSystemAddress failed: 0x%X", status);
+			__leave;
+		}
+
+		// Copy data - only this really needs exception handling
 		RtlCopyMemory(mapped, src, size);
 
 		success = TRUE;
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER) {
-		LogError("WriteOnReadOnlyMemory: Something went wrong, error code: 0x%X", GetExceptionCode());
+		// This should only catch MmProbeAndLockPages exceptions or memory access violations
+		LogError("WriteOnReadOnlyMemory: Exception caught: 0x%X", GetExceptionCode());
 		success = FALSE;
 	}
 
+	// Cleanup
 	if (mapped != NULL) {
 		MmUnmapLockedPages(mapped, mdl);
 	}
 
-	if (mdl != NULL) {
+	if (pagesLocked && mdl != NULL) {
 		MmUnlockPages(mdl);
+	}
+
+	if (mdl != NULL) {
 		IoFreeMdl(mdl);
 	}
 

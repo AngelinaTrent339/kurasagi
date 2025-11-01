@@ -61,12 +61,34 @@ PVOID wsbp::Ssdt::GetSsdtFunctionAddress(ULONG ServiceIndex) {
 		return NULL;
 	}
 
+	// WARNING: This returns the CURRENT entry, which may be hooked!
 	// On x64, SSDT entries are encoded as offsets from ServiceTableBase
 	// Entry format: (ServiceTableBase[index] >> 4) + ServiceTableBase
-	LONG offset = g_KeServiceDescriptorTable->ServiceTableBase[ServiceIndex] >> 4;
-	PVOID functionAddress = (PVOID)((ULONG_PTR)g_KeServiceDescriptorTable->ServiceTableBase + offset);
+	LONG offset = (LONG)(g_KeServiceDescriptorTable->ServiceTableBase[ServiceIndex] >> 4);
+	PVOID functionAddress = (PVOID)((LONG_PTR)g_KeServiceDescriptorTable->ServiceTableBase + offset);
 
 	return functionAddress;
+}
+
+BOOLEAN wsbp::Ssdt::GetSsdtEntry(ULONG ServiceIndex, PULONG OutEntry) {
+
+	if (!g_KeServiceDescriptorTable) {
+		LogError("GetSsdtEntry: SSDT not initialized");
+		return FALSE;
+	}
+
+	if (ServiceIndex >= g_KeServiceDescriptorTable->NumberOfServices) {
+		LogError("GetSsdtEntry: Invalid service index %lu", ServiceIndex);
+		return FALSE;
+	}
+
+	if (!OutEntry) {
+		LogError("GetSsdtEntry: OutEntry is NULL");
+		return FALSE;
+	}
+
+	*OutEntry = g_KeServiceDescriptorTable->ServiceTableBase[ServiceIndex];
+	return TRUE;
 }
 
 BOOLEAN wsbp::Ssdt::HookSsdtEntry(ULONG ServiceIndex, PVOID HookFunction, PVOID* OutOriginalFunction) {
@@ -81,8 +103,13 @@ BOOLEAN wsbp::Ssdt::HookSsdtEntry(ULONG ServiceIndex, PVOID HookFunction, PVOID*
 		return FALSE;
 	}
 
-	// Get current function address
-	PVOID originalFunction = GetSsdtFunctionAddress(ServiceIndex);
+	// Get ORIGINAL entry BEFORE any modification
+	ULONG originalEntry = g_KeServiceDescriptorTable->ServiceTableBase[ServiceIndex];
+	
+	// Decode original function address from entry
+	LONG offset = (LONG)(originalEntry >> 4);
+	PVOID originalFunction = (PVOID)((LONG_PTR)g_KeServiceDescriptorTable->ServiceTableBase + offset);
+	
 	if (!originalFunction) {
 		LogError("HookSsdtEntry: Could not get original function for index %lu", ServiceIndex);
 		return FALSE;
@@ -92,12 +119,22 @@ BOOLEAN wsbp::Ssdt::HookSsdtEntry(ULONG ServiceIndex, PVOID HookFunction, PVOID*
 	LogInfo("HookSsdtEntry: Hook function: %p", HookFunction);
 
 	// Calculate new offset for hook function
-	// New offset = (HookFunction - ServiceTableBase) << 4
+	// New offset = (HookFunction - ServiceTableBase) >> 4 (then << 4 for storage)
 	LONG_PTR hookOffset = (LONG_PTR)HookFunction - (LONG_PTR)g_KeServiceDescriptorTable->ServiceTableBase;
+	
+	// Check for 32-bit offset overflow (very rare but possible)
+	// Maximum positive offset: 0x7FFFFFF0 (2GB range)
+	// Maximum negative offset: 0x80000000 (-2GB range)
+	if (hookOffset > 0x7FFFFFF0LL || hookOffset < -0x80000000LL) {
+		LogError("HookSsdtEntry: Hook function too far from SSDT base (offset: 0x%llx)", hookOffset);
+		LogError("HookSsdtEntry: SSDT base: %p, Hook: %p", 
+			g_KeServiceDescriptorTable->ServiceTableBase, HookFunction);
+		return FALSE;
+	}
+	
 	ULONG newEntry = (ULONG)(hookOffset << 4);
 
 	// Preserve the lower 4 bits (parameter count) from original entry
-	ULONG originalEntry = g_KeServiceDescriptorTable->ServiceTableBase[ServiceIndex];
 	ULONG parameterCount = originalEntry & 0xF;
 	newEntry |= parameterCount;
 
@@ -110,7 +147,7 @@ BOOLEAN wsbp::Ssdt::HookSsdtEntry(ULONG ServiceIndex, PVOID HookFunction, PVOID*
 
 	LogInfo("HookSsdtEntry: Successfully hooked index %lu", ServiceIndex);
 
-	// Return original function if requested
+	// Return original function if requested (save BEFORE hooking)
 	if (OutOriginalFunction) {
 		*OutOriginalFunction = originalFunction;
 	}

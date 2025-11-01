@@ -53,8 +53,17 @@ namespace wsbp {
 		 * @brief Get SSDT function address by index
 		 * @param ServiceIndex: The syscall number
 		 * @returns Function pointer or NULL if not found
+		 * @warning Returns CURRENT entry (may be hooked). Use GetOriginalSsdtEntry for original.
 		 */
 		PVOID GetSsdtFunctionAddress(ULONG ServiceIndex);
+
+		/*
+		 * @brief Get original SSDT entry value (before any hooks)
+		 * @param ServiceIndex: The syscall number
+		 * @param OutEntry: Pointer to store the raw SSDT entry value
+		 * @returns TRUE if successful, FALSE otherwise
+		 */
+		BOOLEAN GetSsdtEntry(ULONG ServiceIndex, PULONG OutEntry);
 
 		/*
 		 * @brief Print SSDT information for debugging
