@@ -6,6 +6,17 @@
 #include "StackWalker.hpp"
 #include "../Log.hpp"
 
+// PEB definition
+typedef struct _PEB {
+	BYTE Reserved1[2];
+	BYTE BeingDebugged;
+	BYTE Reserved2[1];
+	PVOID Reserved3[2];
+	PVOID Ldr;
+	PVOID ProcessParameters;
+	// ... rest omitted
+} PEB, *PPEB;
+
 // PEB structures for module enumeration
 typedef struct _PEB_LDR_DATA64 {
 	ULONG Length;
@@ -51,13 +62,13 @@ BOOLEAN wsbp::StackWalker::GetModuleForAddress(PEPROCESS Process, PVOID Address,
 	}
 	
 	// Attach to target process
-	KAPC_STATE apcState;
-	KeStackAttachProcess(Process, &apcState);
+	KAPC_STATE apcState = {0};
+	KeStackAttachProcess((PKPROCESS)Process, &apcState);
 	
 	__try {
-		// Get PEB
-		PPEB peb = PsGetProcessPeb(Process);
-		if (!peb) {
+		// Get PEB - offset 0x2e0 in EPROCESS (from your structure dump)
+		PPEB peb = *(PPEB*)((ULONG_PTR)Process + 0x2e0);
+		if (!peb || !MmIsAddressValid(peb)) {
 			KeUnstackDetachProcess(&apcState);
 			return FALSE;
 		}
