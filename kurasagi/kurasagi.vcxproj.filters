@@ -24,7 +24,7 @@
     </Inf>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Entry.cpp">
+    <ClCompile Include="EntryMinimal.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Module\Timer.cpp">

@@ -23,6 +23,8 @@ extern "C" NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING Reg
 
 	if (!wsbp::BypassPatchGuard()) {
 		LogError("DriverEntry: Failed to bypass PatchGuard");
+		LogError("DriverEntry: Your Windows version may not be supported");
+		LogError("DriverEntry: Check README for supported versions: 24H2 26100.4351 - 25H2 26200.6899");
 		return STATUS_UNSUCCESSFUL;
 	}
 
@@ -35,7 +37,8 @@ extern "C" NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING Reg
 	// Step 1: Initialize SSDT module
 	if (!wsbp::Ssdt::InitializeSsdt()) {
 		LogError("DriverEntry: Failed to initialize SSDT module");
-		return STATUS_UNSUCCESSFUL;
+		LogError("DriverEntry: This is non-critical, driver will continue without SSDT hooks");
+		return STATUS_SUCCESS; // Continue anyway
 	}
 
 	// Step 2: Print SSDT information

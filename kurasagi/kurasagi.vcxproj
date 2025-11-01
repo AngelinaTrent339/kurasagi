@@ -131,7 +131,7 @@
     <FilesToPackage Include="$(TargetPath)" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Entry.cpp" />
+    <ClCompile Include="EntryMinimal.cpp" />
     <ClCompile Include="Global.cpp" />
     <ClCompile Include="Module.cpp" />
     <ClCompile Include="Module\Barricade.cpp" />
