@@ -229,23 +229,6 @@ NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 	}
 	
 	if (shouldLog) {
-		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"\n[Kurasagi] ===================================================\n");
-		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] [!] NtCreateFile - FULL INTEL\n");
-		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] ===================================================\n");
-		
-		// Timestamp
-		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] [TIME] %lld (100ns)\n", timestamp.QuadPart);
-		
-		// Process Context
-		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] [PROC] %s | PID: %llu | TID: %llu\n", processName, (ULONG_PTR)pid, (ULONG_PTR)tid);
-		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] [EPROCESS] %p\n", process);
-		
 		// Get actual user-mode caller (first user frame from stack)
 		PVOID actualCaller = returnAddress;
 		WCHAR callerModule[64] = {0};
@@ -261,89 +244,123 @@ NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 			}
 		}
 		
-		if (callerModule[0] != 0) {
-			DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-				"[Kurasagi] [CALLER] %p -> %ws+0x%llX\n", actualCaller, callerModule, callerOffset);
-		} else {
-			DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-				"[Kurasagi] [CALLER] %p (USER-MODE)\n", actualCaller);
+		// Intelligent comment based on file path and operation
+		const char* operationComment = "";
+		if (ObjectAttributes && ObjectAttributes->ObjectName && ObjectAttributes->ObjectName->Buffer) {
+			WCHAR* path = ObjectAttributes->ObjectName->Buffer;
+			if (wcsstr(path, L".sys") || wcsstr(path, L"\\Driver\\")) {
+				operationComment = " -> Checking for driver/kernel module";
+			} else if (wcsstr(path, L".dll")) {
+				operationComment = " -> DLL access (possible module verification)";
+			} else if (wcsstr(path, L".exe")) {
+				operationComment = " -> EXE access (process integrity check?)";
+			} else if (wcsstr(path, L"\\Device\\")) {
+				operationComment = " -> Device access (hardware/driver check)";
+			} else if (CreateOptions & FILE_DELETE_ON_CLOSE) {
+				operationComment = " -> Temp file creation";
+			}
 		}
 		
-		// File Path
+		// Compact syscall trace format
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] [FILE] %wZ\n", ObjectAttributes->ObjectName);
+			"\n[%016llX] Syscall NtCreateFile | TID: %04X | %s (PID:%04X)\n",
+			(ULONG_PTR)actualCaller,
+			(ULONG)(ULONG_PTR)tid,
+			processName,
+			(ULONG)(ULONG_PTR)pid);
 		
-		// All Arguments Decoded
+		if (callerModule[0] != 0) {
+			DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+				"  Caller: %ws+0x%llX%s\n", callerModule, callerOffset, operationComment);
+		}
+		
+		// File path
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"  File: %wZ\n", ObjectAttributes->ObjectName);
+		
+		// All arguments in compact format
 		char optionsBuf[256];
 		char shareBuf[128];
 		DecodeCreateOptions(CreateOptions, optionsBuf, sizeof(optionsBuf));
 		DecodeShareAccess(ShareAccess, shareBuf, sizeof(shareBuf));
 		
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] [ACCESS] 0x%08X (%s)\n", DesiredAccess, DecodeAccessMask(DesiredAccess));
+			"  Args:\n");
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] [DISP] %s (0x%X)\n", DecodeDisposition(CreateDisposition), CreateDisposition);
+			"    FileHandle:        %p\n", FileHandle);
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] [OPTIONS] 0x%08X (%s)\n", CreateOptions, optionsBuf);
+			"    DesiredAccess:     0x%08X (%s)\n", DesiredAccess, DecodeAccessMask(DesiredAccess));
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] [SHARE] 0x%X (%s)\n", ShareAccess, shareBuf);
-		// Requested file attributes and completion info
+			"    ObjectAttributes:  %p\n", ObjectAttributes);
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"    IoStatusBlock:     %p\n", IoStatusBlock);
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"    AllocationSize:    %p\n", AllocationSize);
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"    FileAttributes:    0x%X\n", FileAttributes);
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"    ShareAccess:       0x%X (%s)\n", ShareAccess, shareBuf);
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"    CreateDisposition: 0x%X (%s)\n", CreateDisposition, DecodeDisposition(CreateDisposition));
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"    CreateOptions:     0x%08X (%s)\n", CreateOptions, optionsBuf);
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"    EaBuffer:          %p\n", EaBuffer);
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"    EaLength:          0x%X\n", EaLength);
+		
+		// Result
 		ULONG completionInfo = 0;
 		if (IoStatusBlock) {
 			__try {
 				completionInfo = (ULONG)IoStatusBlock->Information;
 			} __except(EXCEPTION_EXECUTE_HANDLER) {}
 		}
-		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] [ATTRIB] 0x%X (requested)\n", FileAttributes);
-		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] [IO_INFO] 0x%X (%s)\n", completionInfo, DecodeIoStatusInformation(completionInfo));
 		
-		// Return Status
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] [RESULT] 0x%08X (%s)\n", status, NT_SUCCESS(status) ? "SUCCESS" : "FAILED");
+			"  Result: 0x%08X (%s) - %s\n", 
+			status, 
+			NT_SUCCESS(status) ? "SUCCESS" : "FAILED",
+			DecodeIoStatusInformation(completionInfo));
 		
-		// Handle if successful
 		if (NT_SUCCESS(status) && FileHandle) {
 			__try {
 				DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-					"[Kurasagi] [HANDLE] 0x%p\n", *FileHandle);
+					"  Handle: 0x%p\n", *FileHandle);
 			} __except(EXCEPTION_EXECUTE_HANDLER) {}
 		}
 		
-		// Call Stack - ONLY user-mode frames (anticheat reversing)
+		// Compact call stack
 		ULONG userFrameCount = 0;
 		for (ULONG i = 0; i < framesCapture; i++) {
 			if (stackFrames[i].IsUserMode) userFrameCount++;
 		}
 		
-		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] [STACK] %lu user-mode frames:\n", userFrameCount);
-		
-		ULONG frameIdx = 0;
-		for (ULONG i = 0; i < framesCapture && frameIdx < 16; i++) {
-			// SKIP kernel frames completely
-			if (stackFrames[i].IsKernelMode) continue;
-			if (stackFrames[i].Address == NULL) break;
+		if (userFrameCount > 0) {
+			DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+				"  CallStack (%lu frames):\n", userFrameCount);
 			
-			if (stackFrames[i].ModuleName[0] != 0) {
-				DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-					"[Kurasagi]   [%lu] %p -> %ws+0x%llX\n", 
-					frameIdx, 
-					stackFrames[i].Address,
-					stackFrames[i].ModuleName,
-					stackFrames[i].Offset);
-			} else {
-				DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-					"[Kurasagi]   [%lu] %p (unknown module)\n", 
-					frameIdx, 
-					stackFrames[i].Address);
+			ULONG frameIdx = 0;
+			for (ULONG i = 0; i < framesCapture && frameIdx < 8; i++) {
+				if (stackFrames[i].IsKernelMode) continue;
+				if (stackFrames[i].Address == NULL) break;
+				
+				if (stackFrames[i].ModuleName[0] != 0) {
+					DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+						"    [%lu] %p -> %ws+0x%llX\n", 
+						frameIdx, 
+						stackFrames[i].Address,
+						stackFrames[i].ModuleName,
+						stackFrames[i].Offset);
+				} else {
+					DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+						"    [%lu] %p\n", frameIdx, stackFrames[i].Address);
+				}
+				frameIdx++;
 			}
-			frameIdx++;
 		}
 		
-		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] ===================================================\n\n");
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "\n");
 	}
 	
 	return status;

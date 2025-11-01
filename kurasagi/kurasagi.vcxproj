@@ -140,6 +140,7 @@
     <ClCompile Include="Module\Timer.cpp" />
     <ClCompile Include="Module\Ssdt.cpp" />
     <ClCompile Include="Module\InlineHook.cpp" />
+    <ClCompile Include="Module\SyscallTracer.cpp" />
     <ClCompile Include="Util\LDE64.cpp" />
     <ClCompile Include="Util\StackWalker.cpp" />
     <ClCompile Include="Util\Arith.cpp" />
@@ -159,6 +160,10 @@
     <ClInclude Include="Module\SsdtHelpers.hpp" />
     <ClInclude Include="Module\SsdtExamples.hpp" />
     <ClInclude Include="Module\SsdtRealWorld.hpp" />
+    <ClInclude Include="Module\InlineHook.hpp" />
+    <ClInclude Include="Module\SyscallTracer.hpp" />
+    <ClInclude Include="Module\LDE64.hpp" />
+    <ClInclude Include="Module\StackWalker.hpp" />
     <ClInclude Include="Util\Arith.hpp" />
     <ClInclude Include="Util\Memory.hpp" />
   </ItemGroup>

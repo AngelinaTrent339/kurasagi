@@ -1,10 +1,11 @@
 /*
  * @file EntryInline.cpp  
- * @brief Test inline hooking (ACTUALLY WORKS on modern Windows)
+ * @brief FULL SYSCALL TRACER - Everything anticheats do will be logged
  */
 
 #include "Include.hpp"
 #include "Module/InlineHook.hpp"
+#include "Module/SyscallTracer.hpp"
 #include "Global.hpp"
 #include "Log.hpp"
 #include "Util/Memory.hpp"
@@ -13,70 +14,36 @@ extern "C" NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING Reg
 	UNREFERENCED_PARAMETER(DriverObject);
 	UNREFERENCED_PARAMETER(RegistryPath);
 	
-	LogInfo("========== INLINE HOOK TEST ==========");
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
+		"\n"
+		"========================================================\n"
+		"  KURASAGI - ANTICHEAT SYSCALL TRACER\n"
+		"  Full Intel: Memory reads, queries, file access, etc.\n"
+		"========================================================\n\n");
 	
-	// Get NtCreateFile address
+	// Install NtCreateFile hook
 	UNICODE_STRING ntCreateFileStr;
 	RtlInitUnicodeString(&ntCreateFileStr, L"NtCreateFile");
-	
 	PVOID ntCreateFileAddr = MmGetSystemRoutineAddress(&ntCreateFileStr);
-	if (!ntCreateFileAddr) {
-		LogError("Could not find NtCreateFile");
-		return STATUS_UNSUCCESSFUL;
+	
+	if (ntCreateFileAddr) {
+		wsbp::InlineHook::OrigNtCreateFile = (wsbp::InlineHook::NtCreateFile_t)ntCreateFileAddr;
+		if (wsbp::InlineHook::InstallHook(ntCreateFileAddr, (PVOID)wsbp::InlineHook::HkNtCreateFile, &wsbp::InlineHook::NtCreateFileHook)) {
+			DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[+] NtCreateFile hooked\n");
+		}
 	}
 	
-	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-		"[Kurasagi] NtCreateFile found at: %p\n", ntCreateFileAddr);
-	
-	// Save original function pointer
-	wsbp::InlineHook::OrigNtCreateFile = (wsbp::InlineHook::NtCreateFile_t)ntCreateFileAddr;
-	
-	// Install inline hook
-	if (!wsbp::InlineHook::InstallHook(
-		ntCreateFileAddr, 
-		(PVOID)wsbp::InlineHook::HkNtCreateFile,
-		&wsbp::InlineHook::NtCreateFileHook)) {
-		
-		LogError("Failed to install inline hook");
-		return STATUS_UNSUCCESSFUL;
+	// Install comprehensive syscall tracer
+	if (wsbp::SyscallTracer::InitializeTracer()) {
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[+] Comprehensive syscall tracer active\n");
 	}
 	
-	// Test it
-	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-		"[Kurasagi] 🧪 Testing inline hook...\n");
-	
-	UNICODE_STRING testPath;
-	RtlInitUnicodeString(&testPath, L"\\??\\C:\\test_inline_hook.txt");
-	
-	OBJECT_ATTRIBUTES objAttr;
-	InitializeObjectAttributes(&objAttr, &testPath, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
-	
-	HANDLE testHandle;
-	IO_STATUS_BLOCK ioStatus;
-	
-	NTSTATUS testStatus = ZwCreateFile(
-		&testHandle,
-		GENERIC_WRITE,
-		&objAttr,
-		&ioStatus,
-		NULL,
-		FILE_ATTRIBUTE_NORMAL,
-		0,
-		FILE_OVERWRITE_IF,
-		FILE_SYNCHRONOUS_IO_NONALERT,
-		NULL,
-		0
-	);
-	
-	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-		"[Kurasagi] 🧪 Test returned: 0x%08X\n", testStatus);
-	
-	if (NT_SUCCESS(testStatus)) {
-		ZwClose(testHandle);
-	}
-	
-	LogInfo("========== INLINE HOOK ACTIVE ==========");
-	LogInfo("Open Notepad and save a file - you WILL see logs!");
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
+		"\n"
+		"========================================================\n"
+		"  TRACER READY - Run your anticheat now!\n"
+		"  All syscalls will be logged with full context\n"
+		"========================================================\n\n");
 	
 	return STATUS_SUCCESS;
 }
