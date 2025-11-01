@@ -140,9 +140,25 @@ BOOLEAN wsbp::Ssdt::HookSsdtEntry(ULONG ServiceIndex, PVOID HookFunction, PVOID*
 
 	// Write the new entry using MDL method
 	PVOID entryAddress = &g_KeServiceDescriptorTable->ServiceTableBase[ServiceIndex];
+	
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi] 📝 Writing hook to SSDT[%lu]:\n", ServiceIndex);
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi]   Entry address: %p\n", entryAddress);
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi]   Original entry: 0x%08X\n", originalEntry);
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi]   New entry: 0x%08X\n", newEntry);
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi]   Original func: %p\n", originalFunction);
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi]   Hook func: %p\n", HookFunction);
+	
 	if (!WriteOnReadOnlyMemory(&newEntry, entryAddress, sizeof(ULONG))) {
 		LogError("HookSsdtEntry: Failed to write hook entry");
 		return FALSE;
+	}
+	
+	// Verify the write actually worked
+	ULONG verifyEntry = g_KeServiceDescriptorTable->ServiceTableBase[ServiceIndex];
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi]   ✅ Entry after write: 0x%08X\n", verifyEntry);
+	
+	if (verifyEntry != newEntry) {
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi]   ⚠️ WARNING: Entry mismatch! Expected 0x%08X, got 0x%08X\n", newEntry, verifyEntry);
 	}
 
 	LogInfo("HookSsdtEntry: Successfully hooked index %lu", ServiceIndex);
@@ -150,6 +166,7 @@ BOOLEAN wsbp::Ssdt::HookSsdtEntry(ULONG ServiceIndex, PVOID HookFunction, PVOID*
 	// Return original function if requested (save BEFORE hooking)
 	if (OutOriginalFunction) {
 		*OutOriginalFunction = originalFunction;
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi]   Saved original function to %p -> %p\n", OutOriginalFunction, originalFunction);
 	}
 
 	return TRUE;
@@ -272,14 +289,27 @@ NTSTATUS NTAPI wsbp::Ssdt::HkNtCreateFile(
 	ULONG EaLength
 ) {
 
-	// Log file creation attempts
-	if (ObjectAttributes && ObjectAttributes->ObjectName) {
-		LogInfo("NtCreateFile called: %wZ", ObjectAttributes->ObjectName);
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi] 🔥 HkNtCreateFile CALLED!\n");
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi]   ObjectAttributes=%p\n", ObjectAttributes);
+	
+	if (ObjectAttributes) {
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi]   ObjectAttributes->ObjectName=%p\n", ObjectAttributes->ObjectName);
+		if (ObjectAttributes->ObjectName) {
+			DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi]   File: %wZ\n", ObjectAttributes->ObjectName);
+		}
+	}
+	
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi]   OrigNtCreateFile=%p\n", OrigNtCreateFile);
+
+	// Check if original function is valid
+	if (!OrigNtCreateFile) {
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi] ❌ ERROR: OrigNtCreateFile is NULL!\n");
+		return STATUS_UNSUCCESSFUL;
 	}
 
 	// Call original function
 	NtCreateFile_t original = (NtCreateFile_t)OrigNtCreateFile;
-	return original(
+	NTSTATUS status = original(
 		FileHandle,
 		DesiredAccess,
 		ObjectAttributes,
@@ -292,6 +322,9 @@ NTSTATUS NTAPI wsbp::Ssdt::HkNtCreateFile(
 		EaBuffer,
 		EaLength
 	);
+	
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi]   Status=0x%08X\n", status);
+	return status;
 }
 
 typedef NTSTATUS(NTAPI* NtOpenProcess_t)(
@@ -308,13 +341,26 @@ NTSTATUS NTAPI wsbp::Ssdt::HkNtOpenProcess(
 	PCLIENT_ID ClientId
 ) {
 
-	// Log process access attempts
-	if (ClientId && ClientId->UniqueProcess) {
-		LogInfo("NtOpenProcess called: PID=%llu, Access=0x%lx", 
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi] 🔥 HkNtOpenProcess CALLED!\n");
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi]   ClientId=%p\n", ClientId);
+	
+	if (ClientId) {
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi]   PID=%llu, Access=0x%lx\n", 
 			(ULONG_PTR)ClientId->UniqueProcess, DesiredAccess);
+	}
+	
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi]   OrigNtOpenProcess=%p\n", OrigNtOpenProcess);
+
+	// Check if original function is valid
+	if (!OrigNtOpenProcess) {
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi] ❌ ERROR: OrigNtOpenProcess is NULL!\n");
+		return STATUS_UNSUCCESSFUL;
 	}
 
 	// Call original function
 	NtOpenProcess_t original = (NtOpenProcess_t)OrigNtOpenProcess;
-	return original(ProcessHandle, DesiredAccess, ObjectAttributes, ClientId);
+	NTSTATUS status = original(ProcessHandle, DesiredAccess, ObjectAttributes, ClientId);
+	
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi]   Status=0x%08X\n", status);
+	return status;
 }
