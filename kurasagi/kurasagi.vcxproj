@@ -131,7 +131,7 @@
     <FilesToPackage Include="$(TargetPath)" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="EntryMinimal.cpp" />
+    <ClCompile Include="EntryInline.cpp" />
     <ClCompile Include="Global.cpp" />
     <ClCompile Include="Module.cpp" />
     <ClCompile Include="Module\Barricade.cpp" />
@@ -139,6 +139,7 @@
     <ClCompile Include="Module\Misc.cpp" />
     <ClCompile Include="Module\Timer.cpp" />
     <ClCompile Include="Module\Ssdt.cpp" />
+    <ClCompile Include="Module\InlineHook.cpp" />
     <ClCompile Include="Util\Arith.cpp" />
     <ClCompile Include="Util\Memory.cpp" />
   </ItemGroup>
