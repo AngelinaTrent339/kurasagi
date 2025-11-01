@@ -27,9 +27,32 @@ BOOLEAN wsbp::InlineHook::InstallHook(PVOID TargetFunction, PVOID HookFunction, 
 	// Save original bytes
 	RtlCopyMemory(OutHook->OriginalBytes, TargetFunction, 14);
 	
+	// Allocate trampoline (executable memory)
+	g_TrampolineBuffer = ExAllocatePoolWithTag(NonPagedPool, 64, 'pmrT');
+	if (!g_TrampolineBuffer) {
+		LogError("InstallHook: Failed to allocate trampoline");
+		return FALSE;
+	}
+	
+	// Build trampoline: original 14 bytes + JMP back to Target+14
+	RtlCopyMemory(g_TrampolineBuffer, OutHook->OriginalBytes, 14);
+	
+	UCHAR* trampJmp = (UCHAR*)g_TrampolineBuffer + 14;
+	PVOID returnAddr = (PVOID)((ULONG_PTR)TargetFunction + 14);
+	
+	// JMP [RIP+0]; dq returnAddr
+	trampJmp[0] = 0xFF;
+	trampJmp[1] = 0x25;
+	trampJmp[2] = 0x00;
+	trampJmp[3] = 0x00;
+	trampJmp[4] = 0x00;
+	trampJmp[5] = 0x00;
+	*(PVOID*)&trampJmp[6] = returnAddr;
+	
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+		"[Kurasagi]   Trampoline: %p -> %p\n", g_TrampolineBuffer, returnAddr);
+	
 	// Build JMP instruction: JMP [RIP+0]; dq HookFunction
-	// FF 25 00 00 00 00 = JMP [RIP+0]
-	// Followed by 8-byte absolute address
 	UCHAR jmpBytes[14] = {
 		0xFF, 0x25, 0x00, 0x00, 0x00, 0x00,  // JMP [RIP+0]
 		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00  // Address
@@ -40,6 +63,8 @@ BOOLEAN wsbp::InlineHook::InstallHook(PVOID TargetFunction, PVOID HookFunction, 
 	// Write the hook
 	if (!WriteOnReadOnlyMemory(jmpBytes, TargetFunction, 14)) {
 		LogError("InstallHook: Failed to write hook bytes");
+		ExFreePoolWithTag(g_TrampolineBuffer, 'pmrT');
+		g_TrampolineBuffer = NULL;
 		return FALSE;
 	}
 	
@@ -69,6 +94,9 @@ BOOLEAN wsbp::InlineHook::RemoveHook(Hook* HookInfo) {
 	return TRUE;
 }
 
+// Trampoline to call original function
+static PVOID g_TrampolineBuffer = NULL;
+
 NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 	PHANDLE FileHandle,
 	ACCESS_MASK DesiredAccess,
@@ -84,17 +112,23 @@ NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 ) {
 
 	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-		"[Kurasagi] 🔥 INLINE HOOK TRIGGERED! NtCreateFile called!\n");
+		"[Kurasagi] 🔥 NtCreateFile called!\n");
 	
 	if (ObjectAttributes && ObjectAttributes->ObjectName) {
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
 			"[Kurasagi]   File: %wZ\n", ObjectAttributes->ObjectName);
 	}
 	
-	// Temporarily unhook to call original
-	RemoveHook(&NtCreateFileHook);
+	// Call original via trampoline (original bytes + jmp back)
+	if (!g_TrampolineBuffer) {
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"[Kurasagi] ERROR: Trampoline not initialized!\n");
+		return STATUS_UNSUCCESSFUL;
+	}
 	
-	NTSTATUS status = OrigNtCreateFile(
+	NtCreateFile_t trampolineFunc = (NtCreateFile_t)g_TrampolineBuffer;
+	
+	NTSTATUS status = trampolineFunc(
 		FileHandle,
 		DesiredAccess,
 		ObjectAttributes,
@@ -107,9 +141,6 @@ NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 		EaBuffer,
 		EaLength
 	);
-	
-	// Re-hook
-	InstallHook(NtCreateFileHook.TargetFunction, HkNtCreateFile, &NtCreateFileHook);
 	
 	return status;
 }
