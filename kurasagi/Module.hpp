@@ -9,6 +9,7 @@
 #include "Module/Barricade.hpp"
 #include "Module/Context7.hpp"
 #include "Module/Misc.hpp"
+#include "Module/Ssdt.hpp"
 
 namespace wsbp {
 
