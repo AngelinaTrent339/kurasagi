@@ -7,6 +7,7 @@
 #include "../Log.hpp"
 #include "../Util/Memory.hpp"
 #include "../Util/LDE64.hpp"
+#include "../Util/StackWalker.hpp"
 
 wsbp::InlineHook::Hook wsbp::InlineHook::NtCreateFileHook = { 0 };
 wsbp::InlineHook::NtCreateFile_t wsbp::InlineHook::OrigNtCreateFile = NULL;
@@ -185,20 +186,9 @@ NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 	}
 	const char* processName = processNameBuf;
 	
-	// Capture call stack - both kernel and user mode
-	PVOID callStack[16] = {0};
-	ULONG framesCapture = 0;
-	
-	// Try to capture user-mode frames (flag 1 = user mode)
-	__try {
-		framesCapture = RtlWalkFrameChain(callStack, 16, 1);
-		// If no user frames, try kernel frames
-		if (framesCapture == 0) {
-			framesCapture = RtlWalkFrameChain(callStack, 16, 0);
-		}
-	} __except(EXCEPTION_EXECUTE_HANDLER) {
-		framesCapture = 0;
-	}
+	// Capture full call stack with module resolution
+	StackWalker::StackFrame stackFrames[16] = {0};
+	ULONG framesCapture = StackWalker::CaptureStack(stackFrames, 16, process);
 	
 	// ========== CALL ORIGINAL ==========
 	if (!g_TrampolineBuffer) {
@@ -283,14 +273,27 @@ NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 			} __except(EXCEPTION_EXECUTE_HANDLER) {}
 		}
 		
-		// Call Stack - capture user-mode stack properly
+		// Call Stack with full module resolution
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] [STACK] %lu frames captured:\n", framesCapture);
-		for (ULONG i = 0; i < framesCapture && i < 8; i++) {
-			if (callStack[i] == NULL) break;
-			BOOLEAN isKernel = ((ULONG_PTR)callStack[i] >= 0xFFFF800000000000);
-			DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-				"[Kurasagi]   [%lu] %p %s\n", i, callStack[i], isKernel ? "(K)" : "(U)");
+			"[Kurasagi] [STACK] %lu frames:\n", framesCapture);
+		for (ULONG i = 0; i < framesCapture && i < 12; i++) {
+			if (stackFrames[i].Address == NULL) break;
+			
+			if (stackFrames[i].ModuleName[0] != 0) {
+				DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+					"[Kurasagi]   [%lu] %p -> %wZ+0x%llX %s\n", 
+					i, 
+					stackFrames[i].Address,
+					stackFrames[i].ModuleName,
+					stackFrames[i].Offset,
+					stackFrames[i].IsKernelMode ? "(K)" : "(U)");
+			} else {
+				DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+					"[Kurasagi]   [%lu] %p (unknown module) %s\n", 
+					i, 
+					stackFrames[i].Address,
+					stackFrames[i].IsKernelMode ? "(K)" : "(U)");
+			}
 		}
 		
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
