@@ -6,15 +6,20 @@
 #include "StackWalker.hpp"
 #include "../Log.hpp"
 
+// Forward declarations for undocumented APIs
+extern "C" {
+	NTKERNELAPI VOID KeStackAttachProcess(PKPROCESS Process, PKAPC_STATE ApcState);
+	NTKERNELAPI VOID KeUnstackDetachProcess(PKAPC_STATE ApcState);
+}
+
 // PEB definition
 typedef struct _PEB {
-	BYTE Reserved1[2];
-	BYTE BeingDebugged;
-	BYTE Reserved2[1];
+	UCHAR Reserved1[2];
+	UCHAR BeingDebugged;
+	UCHAR Reserved2[1];
 	PVOID Reserved3[2];
 	PVOID Ldr;
 	PVOID ProcessParameters;
-	// ... rest omitted
 } PEB, *PPEB;
 
 // PEB structures for module enumeration
@@ -62,7 +67,8 @@ BOOLEAN wsbp::StackWalker::GetModuleForAddress(PEPROCESS Process, PVOID Address,
 	}
 	
 	// Attach to target process
-	KAPC_STATE apcState = {0};
+	KAPC_STATE apcState;
+	RtlZeroMemory(&apcState, sizeof(apcState));
 	KeStackAttachProcess((PKPROCESS)Process, &apcState);
 	
 	__try {
