@@ -154,6 +154,18 @@ static void DecodeShareAccess(ULONG share, char* buffer, SIZE_T bufSize) {
 	if (buffer[0] == 0) strcpy_s(buffer, bufSize, "EXCLUSIVE");
 }
 
+static const char* DecodeIoStatusInformation(ULONG info) {
+	switch (info) {
+		case FILE_SUPERSEDED: return "FILE_SUPERSEDED";
+		case FILE_OPENED: return "FILE_OPENED";
+		case FILE_CREATED: return "FILE_CREATED";
+		case FILE_OVERWRITTEN: return "FILE_OVERWRITTEN";
+		case FILE_EXISTS: return "FILE_EXISTS";
+		case FILE_DOES_NOT_EXIST: return "FILE_DOES_NOT_EXIST";
+		default: return "UNKNOWN";
+	}
+}
+
 NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 	PHANDLE FileHandle,
 	ACCESS_MASK DesiredAccess,
@@ -251,7 +263,7 @@ NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 		
 		if (callerModule[0] != 0) {
 			DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-				"[Kurasagi] [CALLER] %p -> %wZ+0x%llX\n", actualCaller, callerModule, callerOffset);
+				"[Kurasagi] [CALLER] %p -> %ws+0x%llX\n", actualCaller, callerModule, callerOffset);
 		} else {
 			DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
 				"[Kurasagi] [CALLER] %p (USER-MODE)\n", actualCaller);
@@ -275,15 +287,17 @@ NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 			"[Kurasagi] [OPTIONS] 0x%08X (%s)\n", CreateOptions, optionsBuf);
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
 			"[Kurasagi] [SHARE] 0x%X (%s)\n", ShareAccess, shareBuf);
-		// Read actual file attributes from IoStatusBlock after the call
-		ULONG actualAttributes = FileAttributes;
-		if (NT_SUCCESS(status) && IoStatusBlock) {
+		// Requested file attributes and completion info
+		ULONG completionInfo = 0;
+		if (IoStatusBlock) {
 			__try {
-				actualAttributes = (ULONG)IoStatusBlock->Information;
+				completionInfo = (ULONG)IoStatusBlock->Information;
 			} __except(EXCEPTION_EXECUTE_HANDLER) {}
 		}
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] [ATTRIB] 0x%X (requested=0x%X)\n", actualAttributes, FileAttributes);
+			"[Kurasagi] [ATTRIB] 0x%X (requested)\n", FileAttributes);
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"[Kurasagi] [IO_INFO] 0x%X (%s)\n", completionInfo, DecodeIoStatusInformation(completionInfo));
 		
 		// Return Status
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
@@ -314,7 +328,7 @@ NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 			
 			if (stackFrames[i].ModuleName[0] != 0) {
 				DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-					"[Kurasagi]   [%lu] %p -> %wZ+0x%llX\n", 
+					"[Kurasagi]   [%lu] %p -> %ws+0x%llX\n", 
 					frameIdx, 
 					stackFrames[i].Address,
 					stackFrames[i].ModuleName,

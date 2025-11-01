@@ -131,23 +131,27 @@ BOOLEAN wsbp::StackWalker::GetModuleForAddress(PEPROCESS Process, PVOID Address,
 		return TRUE;
 	}
 	
-	// Attach to target process
+	// Attach to target process only if we're not already in it
+	BOOLEAN needDetach = FALSE;
 	KURASAGI_KAPC_STATE apcState;
 	RtlZeroMemory(&apcState, sizeof(apcState));
-	KeStackAttachProcess((PKPROCESS)Process, &apcState);
+	if (PsGetCurrentProcess() != Process) {
+		KeStackAttachProcess((PKPROCESS)Process, &apcState);
+		needDetach = TRUE;
+	}
 	
 	__try {
 		// Get PEB - offset 0x2e0 in EPROCESS (from your structure dump)
 		PKURASAGI_PEB peb = *(PKURASAGI_PEB*)((ULONG_PTR)Process + 0x2e0);
 		if (!peb || !MmIsAddressValid(peb)) {
-			KeUnstackDetachProcess(&apcState);
+			if (needDetach) KeUnstackDetachProcess(&apcState);
 			return FALSE;
 		}
 		
 		// Get loader data
 		PPEB_LDR_DATA64 ldr = (PPEB_LDR_DATA64)peb->Ldr;
 		if (!ldr) {
-			KeUnstackDetachProcess(&apcState);
+			if (needDetach) KeUnstackDetachProcess(&apcState);
 			return FALSE;
 		}
 		
@@ -165,15 +169,18 @@ BOOLEAN wsbp::StackWalker::GetModuleForAddress(PEPROCESS Process, PVOID Address,
 			if ((ULONG_PTR)Address >= (ULONG_PTR)base && 
 			    (ULONG_PTR)Address < ((ULONG_PTR)base + size)) {
 				
-				// Copy module name
+				// Copy module name (prefer base name, fallback to full path)
 				if (entry->BaseDllName.Buffer && entry->BaseDllName.Length > 0) {
 					SIZE_T copyLen = min(entry->BaseDllName.Length / sizeof(WCHAR), (NameSize / sizeof(WCHAR)) - 1);
 					wcsncpy_s(ModuleName, NameSize / sizeof(WCHAR), entry->BaseDllName.Buffer, copyLen);
+				} else if (entry->FullDllName.Buffer && entry->FullDllName.Length > 0) {
+					SIZE_T copyLen = min(entry->FullDllName.Length / sizeof(WCHAR), (NameSize / sizeof(WCHAR)) - 1);
+					wcsncpy_s(ModuleName, NameSize / sizeof(WCHAR), entry->FullDllName.Buffer, copyLen);
 				}
 				
 				if (ModuleBase) *ModuleBase = base;
 				
-				KeUnstackDetachProcess(&apcState);
+				if (needDetach) KeUnstackDetachProcess(&apcState);
 				return TRUE;
 			}
 			
@@ -184,101 +191,144 @@ BOOLEAN wsbp::StackWalker::GetModuleForAddress(PEPROCESS Process, PVOID Address,
 		}
 		
 	} __except(EXCEPTION_EXECUTE_HANDLER) {
-		KeUnstackDetachProcess(&apcState);
+		if (needDetach) KeUnstackDetachProcess(&apcState);
 		return FALSE;
 	}
 	
-	KeUnstackDetachProcess(&apcState);
+	if (needDetach) KeUnstackDetachProcess(&apcState);
 	return FALSE;
 }
 
 ULONG wsbp::StackWalker::CaptureStack(StackFrame* Frames, ULONG MaxFrames, PEPROCESS Process) {
-	
 	if (!Frames || MaxFrames == 0) return 0;
-	
+
 	RtlZeroMemory(Frames, sizeof(StackFrame) * MaxFrames);
-	
+
 	ULONG captured = 0;
-	
-	// Get current thread to access trap frame
+	const ULONG maxUserFrames = 64;
+	PVOID userStack[maxUserFrames] = {0};
+	ULONG userFrames = 0;
+
 	PKTHREAD currentThread = KeGetCurrentThread();
 	if (!currentThread) return 0;
-	
-	// STRATEGY: Use RtlWalkFrameChain with Flag=1 to capture USER frames
-	// This is way more reliable than manual trap frame parsing
-	PVOID userStack[64] = {0};
-	ULONG userFrames = RtlWalkFrameChain(userStack, 64, 1);  // Flag=1 for user-mode
-	
-	// If that failed, try trap frame method as fallback
+
+	ULONGLONG userRsp = 0;
+	ULONGLONG userRip = 0;
+
+	__try {
+		PKURASAGI_TRAP_FRAME trapFrame = *(PKURASAGI_TRAP_FRAME*)((ULONG_PTR)currentThread + 0x90);
+		if (trapFrame && MmIsAddressValid(trapFrame)) {
+			userRsp = trapFrame->Rsp;
+			userRip = trapFrame->Rip;
+		}
+	} __except(EXCEPTION_EXECUTE_HANDLER) {
+		userRsp = 0;
+		userRip = 0;
+	}
+
+	// Attach to process if necessary before walking user stack
+	KURASAGI_KAPC_STATE apcState;
+	RtlZeroMemory(&apcState, sizeof(apcState));
+	BOOLEAN attached = FALSE;
+	if (Process && PsGetCurrentProcess() != Process) {
+		KeStackAttachProcess((PKPROCESS)Process, &apcState);
+		attached = TRUE;
+	}
+
+	__try {
+		userFrames = RtlWalkFrameChain(userStack, maxUserFrames, 1);
+	} __except(EXCEPTION_EXECUTE_HANDLER) {
+		userFrames = 0;
+	}
+
 	if (userFrames == 0) {
+		// Fallback: manual walk using TEB stack boundaries
+		PKURASAGI_TEB teb = NULL;
 		__try {
-			// Get TrapFrame from KTHREAD+0x90
-			PKURASAGI_TRAP_FRAME trapFrame = *(PKURASAGI_TRAP_FRAME*)((ULONG_PTR)currentThread + 0x90);
+			teb = (PKURASAGI_TEB)PsGetThreadTeb(currentThread);
+		} __except(EXCEPTION_EXECUTE_HANDLER) {
+			teb = NULL;
+		}
+
+		PVOID stackBase = NULL;
+		PVOID stackLimit = NULL;
+		if (teb) {
+			__try {
+				stackBase = teb->NtTib.StackBase;
+				stackLimit = teb->NtTib.StackLimit;
+			} __except(EXCEPTION_EXECUTE_HANDLER) {
+				stackBase = stackLimit = NULL;
+			}
+		}
+
+		if (userRip > 0x10000 && userRip < 0x00007FFFFFFFFFFF && userFrames < maxUserFrames) {
+			userStack[userFrames++] = (PVOID)userRip;
+		}
+
+		if (userRsp && stackBase && stackLimit &&
+			userRsp >= (ULONGLONG)stackLimit && userRsp < (ULONGLONG)stackBase) {
+			ULONGLONG* framePtr = (ULONGLONG*)userRsp;
+			ULONGLONG* frameEnd = (ULONGLONG*)stackBase;
 			
-			if (trapFrame && MmIsAddressValid(trapFrame)) {
-				ULONGLONG userRsp = trapFrame->Rsp;
-				ULONGLONG userRip = trapFrame->Rip;
-				
-				// Manually add first frame from trap frame
-				if (userRip > 0x10000 && userRip < 0x00007FFFFFFFFFFF) {
-					userStack[0] = (PVOID)userRip;
-					userFrames = 1;
-					
-					// Try to walk stack manually
-					KURASAGI_KAPC_STATE apcState;
-					RtlZeroMemory(&apcState, sizeof(apcState));
-					KeStackAttachProcess((PKPROCESS)Process, &apcState);
-					
-					__try {
-						if (userRsp > 0x10000 && userRsp < 0x00007FFFFFFFFFFF) {
-							PVOID* stackPtr = (PVOID*)userRsp;
-							
-							for (int i = 0; i < 32 && userFrames < 64; i++) {
-								if (!MmIsAddressValid(&stackPtr[i])) break;
-								
-								PVOID addr = stackPtr[i];
-								if ((ULONG_PTR)addr > 0x10000 && (ULONG_PTR)addr < 0x00007FFFFFFFFFFF) {
-									// Quick check if it looks like code
-									WCHAR testMod[64] = {0};
-									if (GetModuleForAddress(Process, addr, testMod, sizeof(testMod), NULL)) {
-										if (testMod[0] != 0) {
-											userStack[userFrames++] = addr;
-										}
-									}
-								}
-							}
-						}
-					} __except(EXCEPTION_EXECUTE_HANDLER) {}
-					
-					KeUnstackDetachProcess(&apcState);
+			while (framePtr < frameEnd && userFrames < maxUserFrames) {
+				ULONGLONG potential = 0;
+				__try {
+					potential = *framePtr;
+				} __except(EXCEPTION_EXECUTE_HANDLER) {
+					break;
+				}
+				framePtr++;
+
+				if (potential <= 0x10000 || potential >= 0x00007FFFFFFFFFFF) continue;
+
+				BOOLEAN duplicate = FALSE;
+				for (ULONG j = 0; j < userFrames; j++) {
+					if (userStack[j] == (PVOID)potential) {
+						duplicate = TRUE;
+						break;
+					}
+				}
+				if (duplicate) continue;
+
+				WCHAR modCheck[64] = {0};
+				if (GetModuleForAddress(Process, (PVOID)potential, modCheck, sizeof(modCheck), NULL)) {
+					if (modCheck[0] != 0) {
+						userStack[userFrames++] = (PVOID)potential;
+					}
 				}
 			}
-		} __except(EXCEPTION_EXECUTE_HANDLER) {
-			// No user frames available
 		}
 	}
-	
-	// Now resolve all user-mode frames
+
+	if (attached) {
+		KeUnstackDetachProcess(&apcState);
+	}
+
+	if (userFrames == 0 && userRip > 0x10000 && userRip < 0x00007FFFFFFFFFFF) {
+		userStack[userFrames++] = (PVOID)userRip;
+	}
+
 	for (ULONG i = 0; i < userFrames && captured < MaxFrames; i++) {
-		if (userStack[i] == NULL) continue;
-		
-		// Skip kernel addresses
-		if ((ULONG_PTR)userStack[i] >= 0xFFFF800000000000) continue;
-		
-		Frames[captured].Address = userStack[i];
+		PVOID addr = userStack[i];
+		if (!addr) continue;
+		if ((ULONG_PTR)addr >= 0xFFFF800000000000) continue;
+
+		Frames[captured].Address = addr;
 		Frames[captured].IsKernelMode = FALSE;
 		Frames[captured].IsUserMode = TRUE;
-		
-		// Resolve module name and offset
-		GetModuleForAddress(Process, userStack[i], Frames[captured].ModuleName, 
+		Frames[captured].Offset = 0;
+		Frames[captured].ModuleBase = NULL;
+		Frames[captured].ModuleName[0] = 0;
+
+		GetModuleForAddress(Process, addr, Frames[captured].ModuleName,
 			sizeof(Frames[captured].ModuleName), &Frames[captured].ModuleBase);
-		
+
 		if (Frames[captured].ModuleBase) {
-			Frames[captured].Offset = (ULONG_PTR)userStack[i] - (ULONG_PTR)Frames[captured].ModuleBase;
+			Frames[captured].Offset = (ULONG_PTR)addr - (ULONG_PTR)Frames[captured].ModuleBase;
 		}
-		
+
 		captured++;
 	}
-	
+
 	return captured;
 }
