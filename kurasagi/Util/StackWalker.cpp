@@ -204,101 +204,80 @@ ULONG wsbp::StackWalker::CaptureStack(StackFrame* Frames, ULONG MaxFrames, PEPRO
 	PKTHREAD currentThread = KeGetCurrentThread();
 	if (!currentThread) return 0;
 	
-	// Capture kernel frames first
-	PVOID kernelStack[16] = {0};
-	ULONG kernelFrames = RtlWalkFrameChain(kernelStack, 16, 0);
+	// STRATEGY: Use RtlWalkFrameChain with Flag=1 to capture USER frames
+	// This is way more reliable than manual trap frame parsing
+	PVOID userStack[64] = {0};
+	ULONG userFrames = RtlWalkFrameChain(userStack, 64, 1);  // Flag=1 for user-mode
 	
-	// Add kernel frames
-	for (ULONG i = 0; i < kernelFrames && captured < MaxFrames; i++) {
-		if (kernelStack[i] == NULL) break;
-		
-		Frames[captured].Address = kernelStack[i];
-		Frames[captured].IsKernelMode = TRUE;
-		Frames[captured].IsUserMode = FALSE;
-		
-		// Resolve kernel module
-		GetModuleForAddress(Process, kernelStack[i], Frames[captured].ModuleName, 
-			sizeof(Frames[captured].ModuleName), &Frames[captured].ModuleBase);
-		
-		if (Frames[captured].ModuleBase) {
-			Frames[captured].Offset = (ULONG_PTR)kernelStack[i] - (ULONG_PTR)Frames[captured].ModuleBase;
-		}
-		
-		captured++;
-	}
-	
-	// Now try to capture user-mode frames via trap frame
-	__try {
-		// Get TrapFrame from KTHREAD+0x90
-		PKURASAGI_TRAP_FRAME trapFrame = *(PKURASAGI_TRAP_FRAME*)((ULONG_PTR)currentThread + 0x90);
-		
-		if (trapFrame && MmIsAddressValid(trapFrame)) {
-			// Get user-mode RSP and RIP from trap frame
-			ULONGLONG userRsp = trapFrame->Rsp;
-			ULONGLONG userRip = trapFrame->Rip;
+	// If that failed, try trap frame method as fallback
+	if (userFrames == 0) {
+		__try {
+			// Get TrapFrame from KTHREAD+0x90
+			PKURASAGI_TRAP_FRAME trapFrame = *(PKURASAGI_TRAP_FRAME*)((ULONG_PTR)currentThread + 0x90);
 			
-			// Add the first user-mode frame (the syscall caller)
-			if (userRip > 0x10000 && userRip < 0x00007FFFFFFFFFFF && captured < MaxFrames) {
-				Frames[captured].Address = (PVOID)userRip;
-				Frames[captured].IsKernelMode = FALSE;
-				Frames[captured].IsUserMode = TRUE;
+			if (trapFrame && MmIsAddressValid(trapFrame)) {
+				ULONGLONG userRsp = trapFrame->Rsp;
+				ULONGLONG userRip = trapFrame->Rip;
 				
-				GetModuleForAddress(Process, (PVOID)userRip, Frames[captured].ModuleName, 
-					sizeof(Frames[captured].ModuleName), &Frames[captured].ModuleBase);
-				
-				if (Frames[captured].ModuleBase) {
-					Frames[captured].Offset = userRip - (ULONG_PTR)Frames[captured].ModuleBase;
-				}
-				
-				captured++;
-			}
-			
-			// Attach to process to walk user-mode stack
-			KURASAGI_KAPC_STATE apcState;
-			RtlZeroMemory(&apcState, sizeof(apcState));
-			KeStackAttachProcess((PKPROCESS)Process, &apcState);
-			
-			__try {
-				// Validate user RSP is accessible
-				if (userRsp > 0x10000 && userRsp < 0x00007FFFFFFFFFFF) {
-					PVOID* stackPtr = (PVOID*)userRsp;
+				// Manually add first frame from trap frame
+				if (userRip > 0x10000 && userRip < 0x00007FFFFFFFFFFF) {
+					userStack[0] = (PVOID)userRip;
+					userFrames = 1;
 					
-					// Walk user stack looking for return addresses
-					for (int i = 0; i < 64 && captured < MaxFrames; i++) {
-						if (!MmIsAddressValid(&stackPtr[i])) break;
-						
-						PVOID addr = stackPtr[i];
-						
-						// Check if this looks like a user-mode code address
-						if ((ULONG_PTR)addr < 0x00007FFFFFFFFFFF && (ULONG_PTR)addr > 0x10000) {
-							// Validate it's in a module
-							WCHAR modName[64] = {0};
-							PVOID modBase = NULL;
+					// Try to walk stack manually
+					KURASAGI_KAPC_STATE apcState;
+					RtlZeroMemory(&apcState, sizeof(apcState));
+					KeStackAttachProcess((PKPROCESS)Process, &apcState);
+					
+					__try {
+						if (userRsp > 0x10000 && userRsp < 0x00007FFFFFFFFFFF) {
+							PVOID* stackPtr = (PVOID*)userRsp;
 							
-							if (GetModuleForAddress(Process, addr, modName, sizeof(modName), &modBase)) {
-								if (modName[0] != 0) {
-									Frames[captured].Address = addr;
-									Frames[captured].IsKernelMode = FALSE;
-									Frames[captured].IsUserMode = TRUE;
-									wcsncpy_s(Frames[captured].ModuleName, 64, modName, _TRUNCATE);
-									Frames[captured].ModuleBase = modBase;
-									Frames[captured].Offset = (ULONG_PTR)addr - (ULONG_PTR)modBase;
-									captured++;
+							for (int i = 0; i < 32 && userFrames < 64; i++) {
+								if (!MmIsAddressValid(&stackPtr[i])) break;
+								
+								PVOID addr = stackPtr[i];
+								if ((ULONG_PTR)addr > 0x10000 && (ULONG_PTR)addr < 0x00007FFFFFFFFFFF) {
+									// Quick check if it looks like code
+									WCHAR testMod[64] = {0};
+									if (GetModuleForAddress(Process, addr, testMod, sizeof(testMod), NULL)) {
+										if (testMod[0] != 0) {
+											userStack[userFrames++] = addr;
+										}
+									}
 								}
 							}
 						}
-					}
+					} __except(EXCEPTION_EXECUTE_HANDLER) {}
+					
+					KeUnstackDetachProcess(&apcState);
 				}
-				
-			} __except(EXCEPTION_EXECUTE_HANDLER) {
-				// Continue with what we have
 			}
-			
-			KeUnstackDetachProcess(&apcState);
+		} __except(EXCEPTION_EXECUTE_HANDLER) {
+			// No user frames available
+		}
+	}
+	
+	// Now resolve all user-mode frames
+	for (ULONG i = 0; i < userFrames && captured < MaxFrames; i++) {
+		if (userStack[i] == NULL) continue;
+		
+		// Skip kernel addresses
+		if ((ULONG_PTR)userStack[i] >= 0xFFFF800000000000) continue;
+		
+		Frames[captured].Address = userStack[i];
+		Frames[captured].IsKernelMode = FALSE;
+		Frames[captured].IsUserMode = TRUE;
+		
+		// Resolve module name and offset
+		GetModuleForAddress(Process, userStack[i], Frames[captured].ModuleName, 
+			sizeof(Frames[captured].ModuleName), &Frames[captured].ModuleBase);
+		
+		if (Frames[captured].ModuleBase) {
+			Frames[captured].Offset = (ULONG_PTR)userStack[i] - (ULONG_PTR)Frames[captured].ModuleBase;
 		}
 		
-	} __except(EXCEPTION_EXECUTE_HANDLER) {
-		// Continue with kernel frames only
+		captured++;
 	}
 	
 	return captured;

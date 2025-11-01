@@ -186,9 +186,9 @@ NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 	}
 	const char* processName = processNameBuf;
 	
-	// Capture full call stack with module resolution
-	StackWalker::StackFrame stackFrames[16] = {0};
-	ULONG framesCapture = StackWalker::CaptureStack(stackFrames, 16, process);
+	// Capture ONLY user-mode call stack (no kernel frames)
+	StackWalker::StackFrame stackFrames[32] = {0};
+	ULONG framesCapture = StackWalker::CaptureStack(stackFrames, 32, process);
 	
 	// ========== CALL ORIGINAL ==========
 	if (!g_TrampolineBuffer) {
@@ -234,11 +234,28 @@ NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
 			"[Kurasagi] [EPROCESS] %p\n", process);
 		
-		// Caller Info - distinguish kernel vs user mode
-		BOOLEAN isKernelCaller = ((ULONG_PTR)returnAddress >= 0xFFFF800000000000);
-		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] [CALLER] %p (%s)\n", returnAddress, 
-			isKernelCaller ? "KERNEL-MODE" : "USER-MODE");
+		// Get actual user-mode caller (first user frame from stack)
+		PVOID actualCaller = returnAddress;
+		WCHAR callerModule[64] = {0};
+		ULONG_PTR callerOffset = 0;
+		for (ULONG i = 0; i < framesCapture; i++) {
+			if (stackFrames[i].IsUserMode && stackFrames[i].Address != NULL) {
+				actualCaller = stackFrames[i].Address;
+				if (stackFrames[i].ModuleName[0] != 0) {
+					wcsncpy_s(callerModule, 64, stackFrames[i].ModuleName, _TRUNCATE);
+					callerOffset = stackFrames[i].Offset;
+				}
+				break;
+			}
+		}
+		
+		if (callerModule[0] != 0) {
+			DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+				"[Kurasagi] [CALLER] %p -> %wZ+0x%llX\n", actualCaller, callerModule, callerOffset);
+		} else {
+			DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+				"[Kurasagi] [CALLER] %p (USER-MODE)\n", actualCaller);
+		}
 		
 		// File Path
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
@@ -258,8 +275,15 @@ NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 			"[Kurasagi] [OPTIONS] 0x%08X (%s)\n", CreateOptions, optionsBuf);
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
 			"[Kurasagi] [SHARE] 0x%X (%s)\n", ShareAccess, shareBuf);
+		// Read actual file attributes from IoStatusBlock after the call
+		ULONG actualAttributes = FileAttributes;
+		if (NT_SUCCESS(status) && IoStatusBlock) {
+			__try {
+				actualAttributes = (ULONG)IoStatusBlock->Information;
+			} __except(EXCEPTION_EXECUTE_HANDLER) {}
+		}
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] [ATTRIB] 0x%X\n", FileAttributes);
+			"[Kurasagi] [ATTRIB] 0x%X (requested=0x%X)\n", actualAttributes, FileAttributes);
 		
 		// Return Status
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
@@ -273,27 +297,35 @@ NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 			} __except(EXCEPTION_EXECUTE_HANDLER) {}
 		}
 		
-		// Call Stack with full module resolution
+		// Call Stack - ONLY user-mode frames (anticheat reversing)
+		ULONG userFrameCount = 0;
+		for (ULONG i = 0; i < framesCapture; i++) {
+			if (stackFrames[i].IsUserMode) userFrameCount++;
+		}
+		
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] [STACK] %lu frames:\n", framesCapture);
-		for (ULONG i = 0; i < framesCapture && i < 12; i++) {
+			"[Kurasagi] [STACK] %lu user-mode frames:\n", userFrameCount);
+		
+		ULONG frameIdx = 0;
+		for (ULONG i = 0; i < framesCapture && frameIdx < 16; i++) {
+			// SKIP kernel frames completely
+			if (stackFrames[i].IsKernelMode) continue;
 			if (stackFrames[i].Address == NULL) break;
 			
 			if (stackFrames[i].ModuleName[0] != 0) {
 				DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-					"[Kurasagi]   [%lu] %p -> %wZ+0x%llX %s\n", 
-					i, 
+					"[Kurasagi]   [%lu] %p -> %wZ+0x%llX\n", 
+					frameIdx, 
 					stackFrames[i].Address,
 					stackFrames[i].ModuleName,
-					stackFrames[i].Offset,
-					stackFrames[i].IsKernelMode ? "(K)" : "(U)");
+					stackFrames[i].Offset);
 			} else {
 				DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-					"[Kurasagi]   [%lu] %p (unknown module) %s\n", 
-					i, 
-					stackFrames[i].Address,
-					stackFrames[i].IsKernelMode ? "(K)" : "(U)");
+					"[Kurasagi]   [%lu] %p (unknown module)\n", 
+					frameIdx, 
+					stackFrames[i].Address);
 			}
+			frameIdx++;
 		}
 		
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
