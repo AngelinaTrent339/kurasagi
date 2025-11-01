@@ -185,9 +185,9 @@ NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 	}
 	const char* processName = processNameBuf;
 	
-	// Capture call stack - use RtlCaptureStackBackTrace instead (more reliable)
+	// Capture call stack
 	PVOID callStack[16] = {0};
-	ULONG framesCapture = RtlCaptureStackBackTrace(0, 16, callStack, NULL);
+	ULONG framesCapture = RtlWalkFrameChain(callStack, 16, 0);
 	
 	// ========== CALL ORIGINAL ==========
 	if (!g_TrampolineBuffer) {
