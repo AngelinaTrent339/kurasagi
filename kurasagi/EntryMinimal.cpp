@@ -40,23 +40,27 @@ extern "C" NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING Reg
 
 	wsbp::Ssdt::PrintSsdtInfo();
 
-	// Hook NtCreateFile
-	ULONG ntCreateFileIndex = wsbp::Ssdt::FindSyscallIndex(L"NtCreateFile");
-	if (ntCreateFileIndex != (ULONG)-1) {
-		if (wsbp::Ssdt::HookSsdtEntry(ntCreateFileIndex, wsbp::Ssdt::HkNtCreateFile, &wsbp::Ssdt::OrigNtCreateFile)) {
-			LogInfo("✅ Successfully hooked NtCreateFile at index 0x%lx!", ntCreateFileIndex);
-		}
+	// Hook some syscalls for demonstration
+	// Use hardcoded syscall indexes (Windows 11 24H2 x64)
+	// NtCreateFile = 0x55, NtOpenProcess = 0x26
+	PVOID OriginalNtCreateFile = NULL;
+	PVOID OriginalNtOpenProcess = NULL;
+
+	// Hook NtCreateFile (syscall index 0x55)
+	if (wsbp::Ssdt::HookSsdtEntry(0x55, (PVOID)wsbp::Ssdt::HkNtCreateFile, &OriginalNtCreateFile)) {
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi] ✅ Successfully hooked NtCreateFile at index 0x55!\n");
+	}
+	else {
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi] ❌ Failed to hook NtCreateFile\n");
 	}
 
-	// Hook NtOpenProcess
-	ULONG ntOpenProcessIndex = wsbp::Ssdt::FindSyscallIndex(L"NtOpenProcess");
-	if (ntOpenProcessIndex != (ULONG)-1) {
-		if (wsbp::Ssdt::HookSsdtEntry(ntOpenProcessIndex, wsbp::Ssdt::HkNtOpenProcess, &wsbp::Ssdt::OrigNtOpenProcess)) {
-			LogInfo("✅ Successfully hooked NtOpenProcess at index 0x%lx!", ntOpenProcessIndex);
-		}
+	// Hook NtOpenProcess (syscall index 0x26)
+	if (wsbp::Ssdt::HookSsdtEntry(0x26, (PVOID)wsbp::Ssdt::HkNtOpenProcess, &OriginalNtOpenProcess)) {
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi] ✅ Successfully hooked NtOpenProcess at index 0x26!\n");
 	}
-
-	LogInfo("========== SSDT Hooks Active - Test QUICKLY! ==========");
+	else {
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi] ❌ Failed to hook NtOpenProcess\n");
+	}	LogInfo("========== SSDT Hooks Active - Test QUICKLY! ==========");
 	LogInfo("Open Notepad and save a file to test NtCreateFile");
 	LogInfo("Open Task Manager to test NtOpenProcess");
 
