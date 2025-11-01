@@ -185,9 +185,20 @@ NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 	}
 	const char* processName = processNameBuf;
 	
-	// Capture call stack
+	// Capture call stack - both kernel and user mode
 	PVOID callStack[16] = {0};
-	ULONG framesCapture = RtlWalkFrameChain(callStack, 16, 0);
+	ULONG framesCapture = 0;
+	
+	// Try to capture user-mode frames (flag 1 = user mode)
+	__try {
+		framesCapture = RtlWalkFrameChain(callStack, 16, 1);
+		// If no user frames, try kernel frames
+		if (framesCapture == 0) {
+			framesCapture = RtlWalkFrameChain(callStack, 16, 0);
+		}
+	} __except(EXCEPTION_EXECUTE_HANDLER) {
+		framesCapture = 0;
+	}
 	
 	// ========== CALL ORIGINAL ==========
 	if (!g_TrampolineBuffer) {
@@ -217,29 +228,31 @@ NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 	
 	if (shouldLog) {
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"\n[Kurasagi] ═══════════════════════════════════════════════════\n");
+			"\n[Kurasagi] ===================================================\n");
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] 🔥 NtCreateFile - FULL INTEL\n");
+			"[Kurasagi] [!] NtCreateFile - FULL INTEL\n");
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] ═══════════════════════════════════════════════════\n");
+			"[Kurasagi] ===================================================\n");
 		
 		// Timestamp
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] ⏱️  Time: %lld (100ns units since 1601)\n", timestamp.QuadPart);
+			"[Kurasagi] [TIME] %lld (100ns)\n", timestamp.QuadPart);
 		
 		// Process Context
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] 📦 Process: %s | PID: %llu | TID: %llu\n", processName, (ULONG_PTR)pid, (ULONG_PTR)tid);
+			"[Kurasagi] [PROC] %s | PID: %llu | TID: %llu\n", processName, (ULONG_PTR)pid, (ULONG_PTR)tid);
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] 📍 EPROCESS: %p\n", process);
+			"[Kurasagi] [EPROCESS] %p\n", process);
 		
-		// Caller Info
+		// Caller Info - distinguish kernel vs user mode
+		BOOLEAN isKernelCaller = ((ULONG_PTR)returnAddress >= 0xFFFF800000000000);
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] � Return Address: %p (caller instruction)\n", returnAddress);
+			"[Kurasagi] [CALLER] %p (%s)\n", returnAddress, 
+			isKernelCaller ? "KERNEL-MODE" : "USER-MODE");
 		
 		// File Path
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] 📄 File: %wZ\n", ObjectAttributes->ObjectName);
+			"[Kurasagi] [FILE] %wZ\n", ObjectAttributes->ObjectName);
 		
 		// All Arguments Decoded
 		char optionsBuf[256];
@@ -248,38 +261,40 @@ NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 		DecodeShareAccess(ShareAccess, shareBuf, sizeof(shareBuf));
 		
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] 🔐 DesiredAccess: 0x%08X (%s)\n", DesiredAccess, DecodeAccessMask(DesiredAccess));
+			"[Kurasagi] [ACCESS] 0x%08X (%s)\n", DesiredAccess, DecodeAccessMask(DesiredAccess));
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] 🗂️  Disposition: %s (0x%X)\n", DecodeDisposition(CreateDisposition), CreateDisposition);
+			"[Kurasagi] [DISP] %s (0x%X)\n", DecodeDisposition(CreateDisposition), CreateDisposition);
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] 🔧 CreateOptions: 0x%08X (%s)\n", CreateOptions, optionsBuf);
+			"[Kurasagi] [OPTIONS] 0x%08X (%s)\n", CreateOptions, optionsBuf);
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] 🤝 ShareAccess: 0x%X (%s)\n", ShareAccess, shareBuf);
+			"[Kurasagi] [SHARE] 0x%X (%s)\n", ShareAccess, shareBuf);
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] 📋 FileAttributes: 0x%X\n", FileAttributes);
+			"[Kurasagi] [ATTRIB] 0x%X\n", FileAttributes);
 		
 		// Return Status
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] ↩️  NTSTATUS: 0x%08X (%s)\n", status, NT_SUCCESS(status) ? "✅ SUCCESS" : "❌ FAILED");
+			"[Kurasagi] [RESULT] 0x%08X (%s)\n", status, NT_SUCCESS(status) ? "SUCCESS" : "FAILED");
 		
 		// Handle if successful
 		if (NT_SUCCESS(status) && FileHandle) {
 			__try {
 				DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-					"[Kurasagi] 🎯 FileHandle: 0x%p\n", *FileHandle);
+					"[Kurasagi] [HANDLE] 0x%p\n", *FileHandle);
 			} __except(EXCEPTION_EXECUTE_HANDLER) {}
 		}
 		
-		// Call Stack (shows execution path)
+		// Call Stack - capture user-mode stack properly
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] 📚 Call Stack (%lu frames):\n", framesCapture);
-		for (ULONG i = 0; i < framesCapture; i++) {
+			"[Kurasagi] [STACK] %lu frames captured:\n", framesCapture);
+		for (ULONG i = 0; i < framesCapture && i < 8; i++) {
+			if (callStack[i] == NULL) break;
+			BOOLEAN isKernel = ((ULONG_PTR)callStack[i] >= 0xFFFF800000000000);
 			DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-				"[Kurasagi]   [%lu] %p\n", i, callStack[i]);
+				"[Kurasagi]   [%lu] %p %s\n", i, callStack[i], isKernel ? "(K)" : "(U)");
 		}
 		
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] ═══════════════════════════════════════════════════\n\n");
+			"[Kurasagi] ===================================================\n\n");
 	}
 	
 	return status;
