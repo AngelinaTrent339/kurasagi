@@ -46,6 +46,26 @@ BOOLEAN wsbp::Ssdt::InitializeSsdt() {
 	LogInfo("InitializeSsdt: ServiceTableBase: %p", g_KeServiceDescriptorTable->ServiceTableBase);
 	LogInfo("InitializeSsdt: NumberOfServices: %llu", g_KeServiceDescriptorTable->NumberOfServices);
 
+	// Verify SSDT integrity by checking a few entries
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi] 🔍 SSDT Integrity Check:\n");
+	
+	PVOID ntoskrnlBase = GetKernelBase();
+	SIZE_T ntoskrnlSize = GetKernelSize();
+	
+	// Check NtCreateFile (index 0x55)
+	ULONG entry55 = g_KeServiceDescriptorTable->ServiceTableBase[0x55];
+	LONG offset55 = (LONG)(entry55 >> 4);
+	PVOID func55 = (PVOID)((LONG_PTR)g_KeServiceDescriptorTable->ServiceTableBase + offset55);
+	BOOLEAN in55 = ((ULONG_PTR)func55 >= (ULONG_PTR)ntoskrnlBase) && ((ULONG_PTR)func55 < ((ULONG_PTR)ntoskrnlBase + ntoskrnlSize));
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi]   SSDT[0x55] = %p (%s)\n", func55, in55 ? "ntoskrnl" : "EXTERNAL!");
+	
+	// Check NtOpenProcess (index 0x26)
+	ULONG entry26 = g_KeServiceDescriptorTable->ServiceTableBase[0x26];
+	LONG offset26 = (LONG)(entry26 >> 4);
+	PVOID func26 = (PVOID)((LONG_PTR)g_KeServiceDescriptorTable->ServiceTableBase + offset26);
+	BOOLEAN in26 = ((ULONG_PTR)func26 >= (ULONG_PTR)ntoskrnlBase) && ((ULONG_PTR)func26 < ((ULONG_PTR)ntoskrnlBase + ntoskrnlSize));
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi]   SSDT[0x26] = %p (%s)\n", func26, in26 ? "ntoskrnl" : "EXTERNAL!");
+
 	return TRUE;
 }
 
@@ -116,6 +136,21 @@ BOOLEAN wsbp::Ssdt::HookSsdtEntry(ULONG ServiceIndex, PVOID HookFunction, PVOID*
 	}
 
 	LogInfo("HookSsdtEntry: Original function at index %lu: %p", ServiceIndex, originalFunction);
+	
+	// Check if the original function is in ntoskrnl.exe range
+	PVOID ntoskrnlBase = GetKernelBase();
+	SIZE_T ntoskrnlSize = GetKernelSize();
+	
+	BOOLEAN isInNtoskrnl = ((ULONG_PTR)originalFunction >= (ULONG_PTR)ntoskrnlBase) &&
+	                       ((ULONG_PTR)originalFunction < ((ULONG_PTR)ntoskrnlBase + ntoskrnlSize));
+	
+	if (!isInNtoskrnl) {
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"[Kurasagi] ⚠️ WARNING: SSDT[%lu] points to %p which is OUTSIDE ntoskrnl.exe (%p-%p)\n",
+			ServiceIndex, originalFunction, ntoskrnlBase, (PVOID)((ULONG_PTR)ntoskrnlBase + ntoskrnlSize));
+		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+			"[Kurasagi] ⚠️ This SSDT entry may already be hooked by another driver!\n");
+	}
 	LogInfo("HookSsdtEntry: Hook function: %p", HookFunction);
 
 	// Calculate new offset for hook function
