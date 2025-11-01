@@ -6,6 +6,15 @@
 #include "StackWalker.hpp"
 #include "../Log.hpp"
 
+// KAPC_STATE structure
+typedef struct _KAPC_STATE {
+	LIST_ENTRY ApcListHead[2];
+	PKPROCESS Process;
+	BOOLEAN KernelApcInProgress;
+	BOOLEAN KernelApcPending;
+	BOOLEAN UserApcPending;
+} KAPC_STATE, *PKAPC_STATE;
+
 // Forward declarations for undocumented APIs
 extern "C" {
 	NTKERNELAPI VOID KeStackAttachProcess(PKPROCESS Process, PKAPC_STATE ApcState);
