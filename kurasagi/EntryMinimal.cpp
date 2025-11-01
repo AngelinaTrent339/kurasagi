@@ -43,11 +43,9 @@ extern "C" NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING Reg
 	// Hook some syscalls for demonstration
 	// Use hardcoded syscall indexes (Windows 11 24H2 x64)
 	// NtCreateFile = 0x55, NtOpenProcess = 0x26
-	PVOID OriginalNtCreateFile = NULL;
-	PVOID OriginalNtOpenProcess = NULL;
 
 	// Hook NtCreateFile (syscall index 0x55)
-	if (wsbp::Ssdt::HookSsdtEntry(0x55, (PVOID)wsbp::Ssdt::HkNtCreateFile, &OriginalNtCreateFile)) {
+	if (wsbp::Ssdt::HookSsdtEntry(0x55, (PVOID)wsbp::Ssdt::HkNtCreateFile, &wsbp::Ssdt::OrigNtCreateFile)) {
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi] ✅ Successfully hooked NtCreateFile at index 0x55!\n");
 	}
 	else {
@@ -55,7 +53,7 @@ extern "C" NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING Reg
 	}
 
 	// Hook NtOpenProcess (syscall index 0x26)
-	if (wsbp::Ssdt::HookSsdtEntry(0x26, (PVOID)wsbp::Ssdt::HkNtOpenProcess, &OriginalNtOpenProcess)) {
+	if (wsbp::Ssdt::HookSsdtEntry(0x26, (PVOID)wsbp::Ssdt::HkNtOpenProcess, &wsbp::Ssdt::OrigNtOpenProcess)) {
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi] ✅ Successfully hooked NtOpenProcess at index 0x26!\n");
 	}
 	else {
