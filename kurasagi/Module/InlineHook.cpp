@@ -111,12 +111,46 @@ NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 	ULONG EaLength
 ) {
 
-	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-		"[Kurasagi] 🔥 NtCreateFile called!\n");
+	// Filter out noise - only log interesting files
+	BOOLEAN shouldLog = FALSE;
 	
-	if (ObjectAttributes && ObjectAttributes->ObjectName) {
+	if (ObjectAttributes && ObjectAttributes->ObjectName && ObjectAttributes->ObjectName->Buffer) {
+		UNICODE_STRING fileName = *ObjectAttributes->ObjectName;
+		
+		// Log if it's NOT a system/device file
+		if (fileName.Length > 0) {
+			// Skip \Device\, \??\Volume, MountPointManager, etc.
+			if (wcsstr(fileName.Buffer, L"\\Device\\") == NULL &&
+			    wcsstr(fileName.Buffer, L"MountPointManager") == NULL &&
+			    wcsstr(fileName.Buffer, L"STORAGE#") == NULL &&
+			    wcsstr(fileName.Buffer, L"\\SystemRoot\\") == NULL) {
+				
+				// Log files with extensions (.txt, .exe, .dll, etc.)
+				if (wcsstr(fileName.Buffer, L".txt") ||
+				    wcsstr(fileName.Buffer, L".doc") ||
+				    wcsstr(fileName.Buffer, L".exe") ||
+				    wcsstr(fileName.Buffer, L".dll") ||
+				    wcsstr(fileName.Buffer, L".log") ||
+				    wcsstr(fileName.Buffer, L".bat") ||
+				    wcsstr(fileName.Buffer, L".ps1") ||
+				    wcsstr(fileName.Buffer, L".ini") ||
+				    wcsstr(fileName.Buffer, L".cfg")) {
+					shouldLog = TRUE;
+				}
+			}
+		}
+	}
+	
+	if (shouldLog) {
+		// Get current process name
+		PEPROCESS currentProcess = PsGetCurrentProcess();
+		PUCHAR processName = (PUCHAR)PsGetProcessImageFileName(currentProcess);
+		
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi]   File: %wZ\n", ObjectAttributes->ObjectName);
+			"[Kurasagi] 🔥 File: %wZ (Process: %s, PID: %llu)\n", 
+			ObjectAttributes->ObjectName,
+			processName,
+			(ULONG_PTR)PsGetCurrentProcessId());
 	}
 	
 	// Call original via trampoline (original bytes + jmp back)
