@@ -58,6 +58,38 @@ extern "C" NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING Reg
 	}
 	else {
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi] ❌ Failed to hook NtOpenProcess\n");
+	}
+
+	// Test the hook by calling NtCreateFile from kernel mode
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi] 🧪 Testing hook by calling from kernel mode...\n");
+	
+	UNICODE_STRING testPath;
+	RtlInitUnicodeString(&testPath, L"\\??\\C:\\test_kurasagi_hook.txt");
+	
+	OBJECT_ATTRIBUTES objAttr;
+	InitializeObjectAttributes(&objAttr, &testPath, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+	
+	HANDLE testHandle;
+	IO_STATUS_BLOCK ioStatus;
+	
+	NTSTATUS testStatus = ZwCreateFile(
+		&testHandle,
+		GENERIC_WRITE,
+		&objAttr,
+		&ioStatus,
+		NULL,
+		FILE_ATTRIBUTE_NORMAL,
+		0,
+		FILE_OVERWRITE_IF,
+		FILE_SYNCHRONOUS_IO_NONALERT,
+		NULL,
+		0
+	);
+	
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "[Kurasagi] 🧪 Test call returned: 0x%08X\n", testStatus);
+	
+	if (NT_SUCCESS(testStatus)) {
+		ZwClose(testHandle);
 	}	LogInfo("========== SSDT Hooks Active - Test QUICKLY! ==========");
 	LogInfo("Open Notepad and save a file to test NtCreateFile");
 	LogInfo("Open Task Manager to test NtOpenProcess");
