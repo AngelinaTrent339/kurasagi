@@ -10,6 +10,9 @@
 wsbp::InlineHook::Hook wsbp::InlineHook::NtCreateFileHook = { 0 };
 wsbp::InlineHook::NtCreateFile_t wsbp::InlineHook::OrigNtCreateFile = NULL;
 
+// Trampoline buffer
+static PVOID g_TrampolineBuffer = NULL;
+
 BOOLEAN wsbp::InlineHook::InstallHook(PVOID TargetFunction, PVOID HookFunction, Hook* OutHook) {
 	
 	if (!TargetFunction || !HookFunction || !OutHook) {
@@ -93,9 +96,6 @@ BOOLEAN wsbp::InlineHook::RemoveHook(Hook* HookInfo) {
 	HookInfo->IsHooked = FALSE;
 	return TRUE;
 }
-
-// Trampoline to call original function
-static PVOID g_TrampolineBuffer = NULL;
 
 NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 	PHANDLE FileHandle,
