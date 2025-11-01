@@ -7,6 +7,9 @@
 #include "InlineHook.hpp"
 #include "../Log.hpp"
 #include "../Util/StackWalker.hpp"
+#include "../Util/Memory.hpp"
+
+using namespace wsbp;
 
 // Trampolines for all syscalls
 static PVOID g_NtReadVirtualMemoryTrampoline = NULL;
