@@ -6,8 +6,8 @@
 #include "StackWalker.hpp"
 #include "../Log.hpp"
 
-// KTRAP_FRAME structure (0x190 bytes)
-typedef struct _KTRAP_FRAME {
+// Custom KTRAP_FRAME structure (0x190 bytes) - renamed to avoid conflicts
+typedef struct _KURASAGI_TRAP_FRAME {
 	ULONGLONG P1Home;                    // 0x0
 	ULONGLONG P2Home;                    // 0x8
 	ULONGLONG P3Home;                    // 0x10
@@ -40,51 +40,51 @@ typedef struct _KTRAP_FRAME {
 	USHORT SegSs;                        // 0x188
 	USHORT Fill3;                        // 0x18a
 	ULONG Fill4;                         // 0x18c
-} KTRAP_FRAME, *PKTRAP_FRAME;
+} KURASAGI_TRAP_FRAME, *PKURASAGI_TRAP_FRAME;
 
-// KAPC_STATE structure
-typedef struct _KAPC_STATE {
+// KAPC_STATE structure - renamed to avoid conflicts
+typedef struct _KURASAGI_KAPC_STATE {
 	LIST_ENTRY ApcListHead[2];
 	PKPROCESS Process;
 	BOOLEAN KernelApcInProgress;
 	BOOLEAN KernelApcPending;
 	BOOLEAN UserApcPending;
-} KAPC_STATE, *PKAPC_STATE;
+} KURASAGI_KAPC_STATE, *PKURASAGI_KAPC_STATE;
 
 // Forward declarations for undocumented APIs
 extern "C" {
-	NTKERNELAPI VOID KeStackAttachProcess(PKPROCESS Process, PKAPC_STATE ApcState);
-	NTKERNELAPI VOID KeUnstackDetachProcess(PKAPC_STATE ApcState);
+	NTKERNELAPI VOID KeStackAttachProcess(PKPROCESS Process, PKURASAGI_KAPC_STATE ApcState);
+	NTKERNELAPI VOID KeUnstackDetachProcess(PKURASAGI_KAPC_STATE ApcState);
 }
 
-// TEB/PEB definitions
-typedef struct _NT_TIB {
+// TEB/PEB definitions - renamed to avoid conflicts
+typedef struct _KURASAGI_NT_TIB {
 	PVOID ExceptionList;
 	PVOID StackBase;
 	PVOID StackLimit;
 	PVOID SubSystemTib;
 	PVOID FiberData;
 	PVOID ArbitraryUserPointer;
-	struct _NT_TIB* Self;
-} NT_TIB, *PNT_TIB;
+	struct _KURASAGI_NT_TIB* Self;
+} KURASAGI_NT_TIB, *PKURASAGI_NT_TIB;
 
-typedef struct _TEB {
-	NT_TIB NtTib;
+typedef struct _KURASAGI_TEB {
+	KURASAGI_NT_TIB NtTib;
 	// ... rest omitted
-} TEB, *PTEB;
+} KURASAGI_TEB, *PKURASAGI_TEB;
 
-typedef struct _PEB {
+typedef struct _KURASAGI_PEB {
 	UCHAR Reserved1[2];
 	UCHAR BeingDebugged;
 	UCHAR Reserved2[1];
 	PVOID Reserved3[2];
 	PVOID Ldr;
 	PVOID ProcessParameters;
-} PEB, *PPEB;
+} KURASAGI_PEB, *PKURASAGI_PEB;
 
 // Undocumented function to get TEB
 extern "C" {
-	NTKERNELAPI PTEB PsGetThreadTeb(PETHREAD Thread);
+	NTKERNELAPI PKURASAGI_TEB PsGetThreadTeb(PETHREAD Thread);
 }
 
 // PEB structures for module enumeration
@@ -132,13 +132,13 @@ BOOLEAN wsbp::StackWalker::GetModuleForAddress(PEPROCESS Process, PVOID Address,
 	}
 	
 	// Attach to target process
-	KAPC_STATE apcState;
+	KURASAGI_KAPC_STATE apcState;
 	RtlZeroMemory(&apcState, sizeof(apcState));
 	KeStackAttachProcess((PKPROCESS)Process, &apcState);
 	
 	__try {
 		// Get PEB - offset 0x2e0 in EPROCESS (from your structure dump)
-		PPEB peb = *(PPEB*)((ULONG_PTR)Process + 0x2e0);
+		PKURASAGI_PEB peb = *(PKURASAGI_PEB*)((ULONG_PTR)Process + 0x2e0);
 		if (!peb || !MmIsAddressValid(peb)) {
 			KeUnstackDetachProcess(&apcState);
 			return FALSE;
@@ -230,7 +230,7 @@ ULONG wsbp::StackWalker::CaptureStack(StackFrame* Frames, ULONG MaxFrames, PEPRO
 	// Now try to capture user-mode frames via trap frame
 	__try {
 		// Get TrapFrame from KTHREAD+0x90
-		PKTRAP_FRAME trapFrame = *(PKTRAP_FRAME*)((ULONG_PTR)currentThread + 0x90);
+		PKURASAGI_TRAP_FRAME trapFrame = *(PKURASAGI_TRAP_FRAME*)((ULONG_PTR)currentThread + 0x90);
 		
 		if (trapFrame && MmIsAddressValid(trapFrame)) {
 			// Get user-mode RSP and RIP from trap frame
@@ -254,7 +254,7 @@ ULONG wsbp::StackWalker::CaptureStack(StackFrame* Frames, ULONG MaxFrames, PEPRO
 			}
 			
 			// Attach to process to walk user-mode stack
-			KAPC_STATE apcState;
+			KURASAGI_KAPC_STATE apcState;
 			RtlZeroMemory(&apcState, sizeof(apcState));
 			KeStackAttachProcess((PKPROCESS)Process, &apcState);
 			
