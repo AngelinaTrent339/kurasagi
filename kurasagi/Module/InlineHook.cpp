@@ -6,6 +6,7 @@
 #include "InlineHook.hpp"
 #include "../Log.hpp"
 #include "../Util/Memory.hpp"
+#include "../Util/LDE64.hpp"
 
 wsbp::InlineHook::Hook wsbp::InlineHook::NtCreateFileHook = { 0 };
 wsbp::InlineHook::NtCreateFile_t wsbp::InlineHook::OrigNtCreateFile = NULL;
@@ -27,8 +28,18 @@ BOOLEAN wsbp::InlineHook::InstallHook(PVOID TargetFunction, PVOID HookFunction, 
 	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
 		"[Kurasagi]   Hook: %p\n", HookFunction);
 
-	// Save original bytes
-	RtlCopyMemory(OutHook->OriginalBytes, TargetFunction, 14);
+	// Use LDE to find safe hook length (need >= 14 bytes for JMP [RIP+0])
+	SIZE_T safeLength = LDE64::GetSafeHookLength(TargetFunction, 14);
+	if (safeLength == 0 || safeLength > 64) {
+		LogError("InstallHook: Cannot safely hook (LDE failed)");
+		return FALSE;
+	}
+	
+	DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
+		"[Kurasagi]   Safe hook length: %llu bytes (complete instructions)\n", safeLength);
+
+	// Save original bytes (use calculated safe length)
+	RtlCopyMemory(OutHook->OriginalBytes, TargetFunction, min(safeLength, 14));
 	
 	// Allocate trampoline (executable memory)
 	g_TrampolineBuffer = ExAllocatePoolWithTag(NonPagedPool, 64, 'pmrT');
