@@ -132,6 +132,27 @@ static const char* DecodeDisposition(ULONG disp) {
 	}
 }
 
+static void DecodeCreateOptions(ULONG options, char* buffer, SIZE_T bufSize) {
+	buffer[0] = 0;
+	if (options & FILE_DIRECTORY_FILE) strcat_s(buffer, bufSize, "DIR|");
+	if (options & FILE_NON_DIRECTORY_FILE) strcat_s(buffer, bufSize, "FILE|");
+	if (options & FILE_DELETE_ON_CLOSE) strcat_s(buffer, bufSize, "DEL_ON_CLOSE|");
+	if (options & FILE_SYNCHRONOUS_IO_NONALERT) strcat_s(buffer, bufSize, "SYNC_IO|");
+	if (options & FILE_RANDOM_ACCESS) strcat_s(buffer, bufSize, "RANDOM|");
+	if (options & FILE_SEQUENTIAL_ONLY) strcat_s(buffer, bufSize, "SEQUENTIAL|");
+	if (buffer[0]) buffer[strlen(buffer)-1] = 0;
+	if (buffer[0] == 0) strcpy_s(buffer, bufSize, "NONE");
+}
+
+static void DecodeShareAccess(ULONG share, char* buffer, SIZE_T bufSize) {
+	buffer[0] = 0;
+	if (share & FILE_SHARE_READ) strcat_s(buffer, bufSize, "READ|");
+	if (share & FILE_SHARE_WRITE) strcat_s(buffer, bufSize, "WRITE|");
+	if (share & FILE_SHARE_DELETE) strcat_s(buffer, bufSize, "DELETE|");
+	if (buffer[0]) buffer[strlen(buffer)-1] = 0;
+	if (buffer[0] == 0) strcpy_s(buffer, bufSize, "EXCLUSIVE");
+}
+
 NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 	PHANDLE FileHandle,
 	ACCESS_MASK DesiredAccess,
@@ -153,12 +174,22 @@ NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 	PEPROCESS process = PsGetCurrentProcess();
 	HANDLE pid = PsGetCurrentProcessId();
 	HANDLE tid = PsGetCurrentThreadId();
-	// Get process name from EPROCESS+ImageFileName offset (0x5a8 on Win11)
-	const char* processName = (const char*)((ULONG_PTR)process + 0x5a8);
 	
-	// Capture call stack (user-mode callers)
-	PVOID callStack[8] = {0};
-	ULONG framesCapture = RtlWalkFrameChain(callStack, 8, 0);
+	// Get process name - use SeLocateProcessImageName or hardcoded offset
+	char processNameBuf[16] = {0};
+	__try {
+		// EPROCESS.ImageFileName offset varies by Windows version
+		// Try multiple known offsets: 0x450 (Win10), 0x5a8 (Win11 old), 0x5a0 (Win11 new)
+		const char* namePtr = (const char*)((ULONG_PTR)process + 0x5a0);
+		RtlCopyMemory(processNameBuf, namePtr, 15);
+	} __except(EXCEPTION_EXECUTE_HANDLER) {
+		strcpy_s(processNameBuf, sizeof(processNameBuf), "Unknown");
+	}
+	const char* processName = processNameBuf;
+	
+	// Capture call stack - use RtlCaptureStackBackTrace instead (more reliable)
+	PVOID callStack[16] = {0};
+	ULONG framesCapture = RtlCaptureStackBackTrace(0, 16, callStack, NULL);
 	
 	// ========== CALL ORIGINAL ==========
 	if (!g_TrampolineBuffer) {
@@ -213,14 +244,19 @@ NTSTATUS NTAPI wsbp::InlineHook::HkNtCreateFile(
 			"[Kurasagi] 📄 File: %wZ\n", ObjectAttributes->ObjectName);
 		
 		// All Arguments Decoded
+		char optionsBuf[256];
+		char shareBuf[128];
+		DecodeCreateOptions(CreateOptions, optionsBuf, sizeof(optionsBuf));
+		DecodeShareAccess(ShareAccess, shareBuf, sizeof(shareBuf));
+		
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
 			"[Kurasagi] 🔐 DesiredAccess: 0x%08X (%s)\n", DesiredAccess, DecodeAccessMask(DesiredAccess));
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
 			"[Kurasagi] 🗂️  Disposition: %s (0x%X)\n", DecodeDisposition(CreateDisposition), CreateDisposition);
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] 🔧 CreateOptions: 0x%08X\n", CreateOptions);
+			"[Kurasagi] 🔧 CreateOptions: 0x%08X (%s)\n", CreateOptions, optionsBuf);
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
-			"[Kurasagi] 🤝 ShareAccess: 0x%X\n", ShareAccess);
+			"[Kurasagi] 🤝 ShareAccess: 0x%X (%s)\n", ShareAccess, shareBuf);
 		DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, 
 			"[Kurasagi] 📋 FileAttributes: 0x%X\n", FileAttributes);
 		
