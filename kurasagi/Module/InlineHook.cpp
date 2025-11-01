@@ -30,7 +30,7 @@ BOOLEAN wsbp::InlineHook::InstallHook(PVOID TargetFunction, PVOID HookFunction, 
 	// Build JMP instruction: JMP [RIP+0]; dq HookFunction
 	// FF 25 00 00 00 00 = JMP [RIP+0]
 	// Followed by 8-byte absolute address
-	BYTE jmpBytes[14] = {
+	UCHAR jmpBytes[14] = {
 		0xFF, 0x25, 0x00, 0x00, 0x00, 0x00,  // JMP [RIP+0]
 		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00  // Address
 	};

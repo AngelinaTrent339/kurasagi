@@ -13,7 +13,7 @@ namespace wsbp {
 		struct Hook {
 			PVOID TargetFunction;
 			PVOID HookFunction;
-			BYTE OriginalBytes[14];  // Store original bytes
+			UCHAR OriginalBytes[14];  // Store original bytes
 			BOOLEAN IsHooked;
 		};
 
